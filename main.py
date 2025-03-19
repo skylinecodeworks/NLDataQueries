@@ -9,9 +9,13 @@ import subprocess
 import asyncio
 import psycopg2
 import re
+import json
+import subprocess
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
+from pydantic import BaseModel
+from typing import Dict, List, Any, Optional
 
 # Cargar variables de entorno desde el fichero .env
 load_dotenv()
@@ -52,6 +56,19 @@ class ExecuteSQLRequest(BaseModel):
     natural_language_query: str
     sql_query: str
 
+
+class ChartSuggestionRequest(BaseModel):
+    # columns: dict => { "colName": "colType", ... }
+    columns: Dict[str, str]
+    # data_sample: lista de filas, cada fila es un dict con {columna: valor}
+    data_sample: List[Dict[str, Any]]
+
+class ChartSuggestionResponse(BaseModel):
+    chart_type: str
+    x_axis: Optional[str] = None
+    y_axis: Optional[str] = None
+    group_by: Optional[str] = None
+    explanation: Optional[str] = None
 
 # Variable global para almacenar el esquema actualizado
 current_schema = {}
@@ -335,6 +352,97 @@ async def download_csv(request: ExecuteSQLRequest):
         content=csv_data,
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=results.csv"}
+    )
+
+def local_llm_suggest_chart(columns: Dict[str, str], data_sample: List[Dict[str, Any]]) -> dict:
+    """
+    Llama al mismo LLM, proporcionándole la lista de columnas y una muestra de datos,
+    para que sugiera el tipo de gráfico ideal y qué ejes usar.
+    Espera que la respuesta sea un JSON parseable.
+    """
+    # Construir prompt
+    prompt = (
+        "Te proporcionaré la descripción de un conjunto de datos con sus columnas (nombres y tipos) "
+        "y algunas filas de ejemplo. Tu tarea es sugerir el mejor tipo de gráfico para visualizar "
+        "estos datos y qué columnas deberían usarse como ejes.\n\n"
+        "### Columnas:\n"
+    )
+    for col_name, col_type in columns.items():
+        prompt += f"- {col_name}: {col_type}\n"
+    prompt += "\n### Muestra de datos:\n"
+    if data_sample:
+        # Mostrar hasta 3 filas para no saturar el prompt
+        sample_rows = data_sample[:3]
+        for i, row in enumerate(sample_rows, start=1):
+            prompt += f"Fila {i}: {row}\n"
+    else:
+        prompt += "(No hay datos de ejemplo)\n"
+
+    prompt += (
+        "\nCon esta información, responde con un objeto JSON estricto, sin rodearlo de texto adicional, "
+        "con la siguiente estructura:\n"
+        "{\n"
+        '  "chart_type": "line|bar|pie|scatter|area|histogram|otro",\n'
+        '  "x_axis": "nombre_de_la_columna_o_null",\n'
+        '  "y_axis": "nombre_de_la_columna_o_null",\n'
+        '  "group_by": "nombre_de_la_columna_o_null",\n'
+        '  "explanation": "Una breve justificación de tu elección"\n'
+        "}\n\n"
+        "Asegúrate de que la respuesta sea un JSON válido, sin agregados fuera del JSON."
+    )
+
+    try:
+        result = subprocess.run(
+            ["ollama", "run", "mistral:latest"],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        llm_output = result.stdout.strip()
+
+        # Como la salida podría venir con backticks o triple backticks, los removemos si existen:
+        llm_output = re.sub(r"```(json)?", "", llm_output, flags=re.IGNORECASE).strip()
+        
+        # Intentamos parsear el contenido como JSON
+        chart_suggestion = json.loads(llm_output)
+        return chart_suggestion
+
+    except subprocess.CalledProcessError as e:
+        # Error al invocar ollama
+        return {
+            "chart_type": "error",
+            "explanation": f"Error llamando al LLM: {str(e)}"
+        }
+    except json.JSONDecodeError:
+        # El LLM no devolvió un JSON parseable
+        return {
+            "chart_type": "unknown",
+            "explanation": f"No se pudo parsear la salida como JSON. Respuesta bruta: {llm_output}"
+        }
+
+@app.post("/suggest_chart", response_model=ChartSuggestionResponse)
+async def suggest_chart(request: ChartSuggestionRequest):
+    """
+    Dado un conjunto de columnas (con tipos) y un pequeño sample de datos,
+    se pregunta al LLM qué tipo de gráfico sugiere y qué ejes usar.
+    Retorna la sugerencia en un objeto ChartSuggestionResponse.
+    """
+    suggestion_dict = local_llm_suggest_chart(request.columns, request.data_sample)
+
+    # Extraer o asignar valores por defecto
+    chart_type = suggestion_dict.get("chart_type", "unknown")
+    x_axis = suggestion_dict.get("x_axis")
+    y_axis = suggestion_dict.get("y_axis")
+    group_by = suggestion_dict.get("group_by")
+    explanation = suggestion_dict.get("explanation", "Sin explicación")
+
+    return ChartSuggestionResponse(
+        chart_type=chart_type,
+        x_axis=x_axis,
+        y_axis=y_axis,
+        group_by=group_by,
+        explanation=explanation
     )
 
 

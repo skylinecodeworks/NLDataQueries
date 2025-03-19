@@ -8,6 +8,7 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://unpkg.com/tabulator-tables/dist/css/tabulator.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     /* Estilos existentes */
     body {
@@ -544,6 +545,34 @@
             alert(error.message);
         });
     }
+
+    async function getChartSuggestion() {
+        // Suponiendo que ya tienes 'currentData' con la info de la tabla
+        // 1. Construye el diccionario de columnas y tipos (p.e. "fecha": "date", "ventas": "int", etc.)
+        // 2. Toma una pequeña muestra de filas de currentData
+
+        const sample = currentData.slice(0, 5); // 5 filas de ejemplo
+        const columns = {}; // De algún lugar podrías inferir tipos
+
+        // Si quieres, infieres el tipo "heurísticamente":
+        // columns[colName] = typeof row[colName] => "number", "string", etc.
+        // O, si lo conoces de antemano, lo rellenas manualmente.
+
+        // Llamada al endpoint:
+        const response = await fetch("http://localhost:8000/suggest_chart", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ columns: columns, data_sample: sample })
+        });
+        if (!response.ok) {
+            throw new Error("Error al obtener sugerencia de gráfico");
+        }
+        const data = await response.json();
+        console.log("Sugerencia de gráfico:", data);
+        // data.chart_type, data.x_axis, data.y_axis, data.group_by, data.explanation
+        // A partir de ahí, generas el gráfico con Chart.js o la librería que desees
+    }
+
 
 
     // Inicializa la carga de historial y esquema
