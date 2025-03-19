@@ -13,8 +13,6 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 
-
-
 # Cargar variables de entorno desde el fichero .env
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -24,11 +22,13 @@ SCHEMA = os.getenv("SCHEMA", "public")
 engine = create_engine(DATABASE_URL)
 metadata = MetaData()
 
-better_prompt = "Es extremadamente importante que la respuesta a esta consulta debe ser unica y exclusivamente una " \
-"consulta sql standard que pueda ser ejecutada en una base de datos postgresql sin incorporar headers ni footers ni " \
-"conclusiones, solo texto sql que pudiera ser ejecutado en una consola de base de datos. El comienzo de la respuesta " \
-"debe empezar por la palabra SELECT y terminar con un punto y coma. Si la respuesta no cumple con estos requisitos, " \
-"el modelo no podra evaluarla correctamente. Por favor, asegurate de que la respuesta sea una consulta sql valida."
+better_prompt = (
+    "Es extremadamente importante que la respuesta a esta consulta debe ser única y exclusivamente una "
+    "consulta sql standard que pueda ser ejecutada en una base de datos postgresql sin incorporar headers ni footers ni "
+    "conclusiones, solo texto sql que pudiera ser ejecutado en una consola de base de datos. El comienzo de la respuesta "
+    "debe empezar por la palabra SELECT y terminar con un punto y coma. Si la respuesta no cumple con estos requisitos, "
+    "el modelo no podrá evaluarla correctamente. Por favor, asegúrate de que la respuesta sea una consulta sql válida."
+)
 
 app = FastAPI(title="NLDataQueries: Consulta en Lenguaje Natural a SQL")
 app.add_middleware(
@@ -40,11 +40,13 @@ app.add_middleware(
 )
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
 class HistoryResponse(BaseModel):
     total_rows: int
     page: int
     per_page: int
     results: List[dict]
+
 
 class ExecuteSQLRequest(BaseModel):
     natural_language_query: str
@@ -116,15 +118,23 @@ class QueryResponse(BaseModel):
     page: int
     per_page: int
 
-def local_llm_generate(natural_language_query: str, schema_info: dict, examples: list, limit: int, offset: int) -> str:
+def modify_pagination(sql_query: str, per_page: int, offset: int) -> str:
     """
-    Usa Ollama (Mistral) para generar una consulta SQL válida basada en el esquema real de la base de datos con paginación.
+    Remueve cualquier cláusula LIMIT/OFFSET existente y agrega la paginación deseada.
+    """
+    # Se remueve cualquier LIMIT/OFFSET ya existente (sin distinguir entre mayúsculas/minúsculas)
+    base_sql = re.sub(r"\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?", "", sql_query, flags=re.IGNORECASE).strip().rstrip(";")
+    return f"{base_sql} LIMIT {per_page} OFFSET {offset};"
+
+def local_llm_generate(natural_language_query: str, schema_info: dict, examples: list) -> str:
+    """
+    Usa Ollama (Mistral) para generar una consulta SQL válida basada en el esquema real de la base de datos.
+    NOTA: Se espera que la consulta generada no incluya cláusulas de paginación, ya que estas se añadirán posteriormente.
     """
     prompt = (
         "Genera una consulta SQL basada en el siguiente esquema de base de datos. "
         "Asegúrate de que la consulta use exclusivamente las tablas y columnas listadas a continuación. "
-        "Incluye siempre la cláusula ORDER BY para una paginación efectiva. "
-        f"Usa LIMIT {limit} OFFSET {offset} para manejar la paginación.\n"
+        "Incluye siempre la cláusula ORDER BY para una paginación efectiva.\n"
     )
     
     # Agregar información del esquema al prompt
@@ -151,11 +161,13 @@ def local_llm_generate(natural_language_query: str, schema_info: dict, examples:
         )
         sql_output = result.stdout.strip()
 
-        # Limpieza del formato ```sql ... ```
+        # Se limpia el formato en caso de venir entre bloques de código
         sql_output = re.sub(r"```(sql)?", "", sql_output, flags=re.IGNORECASE).strip()
-
+        
+        # Se asume que la consulta generada es válida si contiene SELECT y alguna tabla del esquema
         if any(table in sql_output for table in schema_info.keys()) and "SELECT" in sql_output.upper():
-            return sql_output.split(";")[0] + f" LIMIT {limit} OFFSET {offset}" if "LIMIT" not in sql_output else sql_output.split(";")[0] + ";"
+            # Se devuelve la consulta base (sin paginación) terminada en punto y coma.
+            return sql_output.split(";")[0] + ";"
         else:
             return "ERROR: La consulta generada no coincide con el esquema de la base de datos."
 
@@ -165,14 +177,18 @@ def local_llm_generate(natural_language_query: str, schema_info: dict, examples:
 @app.post("/query", response_model=QueryResponse)
 async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per_page: int = Query(10, ge=1, le=100)):
     """
-    Procesa la consulta en lenguaje natural con soporte de paginación y almacena el historial de consultas exitosas.
+    Procesa la consulta en lenguaje natural generando la consulta SQL una única vez y aplicando la paginación.
     """
     examples = ["SELECT * FROM users WHERE created_at >= NOW() - INTERVAL '30 days';"]
     offset = (page - 1) * per_page
-    sql_query = local_llm_generate(query_req.natural_language_query, current_schema, examples, per_page, offset)
+    # Genera la consulta base sin paginación
+    base_sql_query = local_llm_generate(query_req.natural_language_query, current_schema, examples)
 
-    if not any(table in sql_query for table in current_schema.keys()):
+    if not any(table in base_sql_query for table in current_schema.keys()):
         raise HTTPException(status_code=400, detail="La consulta generada no hace referencia a tablas válidas en el esquema.")
+
+    # Aplica la paginación al SQL base
+    sql_query = modify_pagination(base_sql_query, per_page, offset)
 
     try:
         with engine.connect() as conn:
@@ -180,13 +196,13 @@ async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per
             result = [dict(row._mapping) for row in result_proxy]
             total_rows = len(result)
 
-            # Insertar en llm_sql_history con "natural" protegido con comillas dobles
+            # Inserta en llm_sql_history
             insert_query = text("""
                 INSERT INTO llm_sql_history (sql, status, "natural") 
                 VALUES (:sql_query, :status, :natural_query)
             """)
             conn.execute(insert_query, {
-                "sql_query": sql_query,
+                "sql_query": base_sql_query,  # Se almacena la consulta sin paginación
                 "status": True,
                 "natural_query": query_req.natural_language_query
             })
@@ -196,7 +212,6 @@ async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per
         raise HTTPException(status_code=400, detail=f"Error al ejecutar la consulta SQL: {str(e)}")
 
     return QueryResponse(sql_query=sql_query, result=result, total_rows=total_rows, page=page, per_page=per_page)
-
 
 @app.get("/history", response_model=HistoryResponse)
 async def get_query_history(page: int = Query(1, ge=1), per_page: int = Query(10, ge=1, le=100)):
@@ -232,14 +247,13 @@ async def execute_sql_query(
     per_page: int = Query(10, ge=1, le=100)
 ):
     """
-    Ejecuta una consulta SQL específica recibida desde el frontend y la almacena en el historial si es válida.
+    Ejecuta una consulta SQL específica (ya generada previamente) y actualiza la paginación sin volver a invocar al LLM.
     """
     offset = (page - 1) * per_page
-    sql_query = request.sql_query.strip()
+    base_sql_query = request.sql_query.strip()
 
-    # Asegurar que la consulta SQL tiene paginación
-    if "LIMIT" not in sql_query.upper():
-        sql_query = f"{sql_query} LIMIT {per_page} OFFSET {offset};"
+    # Se modifica la consulta base para actualizar el LIMIT y OFFSET
+    sql_query = modify_pagination(base_sql_query, per_page, offset)
 
     try:
         with engine.connect() as conn:
@@ -247,13 +261,13 @@ async def execute_sql_query(
             result = [dict(row._mapping) for row in result_proxy]
             total_rows = len(result)
 
-            # Guardar la consulta en el historial
+            # Guardar la consulta en el historial (se almacena la consulta base sin paginación)
             insert_query = text("""
                 INSERT INTO llm_sql_history (sql, status, "natural") 
                 VALUES (:sql_query, :status, :natural_query)
             """)
             conn.execute(insert_query, {
-                "sql_query": sql_query,
+                "sql_query": base_sql_query,
                 "status": True,
                 "natural_query": request.natural_language_query
             })

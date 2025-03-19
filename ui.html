@@ -7,7 +7,7 @@
   <link href="https://unpkg.com/tabulator-tables/dist/css/tabulator.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css" />
   <style>
-    /* Estilos existentes... */
+    /* Estilos existentes */
     body {
       font-family: Arial, sans-serif;
       margin: 0;
@@ -119,7 +119,6 @@
     .execute-btn:hover {
       background-color: darkgreen;
     }
-    /* Footer para visualizar el esquema */
     footer {
       background-color: #fff;
       border-top: 1px solid #ccc;
@@ -130,8 +129,6 @@
       max-height: 200px;
       overflow-y: auto;
     }
-
-    /* Estilos para el loading spinner */
     #loading-spinner {
       display: none;
       position: fixed;
@@ -156,8 +153,6 @@
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
-
-    /* Estilos para el mensaje emergente */
     .alert {
       position: fixed;
       top: 20px;
@@ -194,7 +189,7 @@
     </div>
   </div>
 
-  <!-- Footer para visualizar el esquema de la base de datos -->
+  <!-- Footer para visualizar el esquema -->
   <footer>
     <h4>Esquema de la Base de Datos</h4>
     <div id="schema-tree"></div>
@@ -220,7 +215,7 @@
   <!-- Mensaje emergente -->
   <div class="alert" id="alert">Error en la consulta. Reintentando...</div>
 
-  <!-- Carga de scripts sin integrity -->
+  <!-- Carga de scripts -->
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/jstree.min.js"></script>
   <script type="text/javascript" src="https://unpkg.com/tabulator-tables/dist/js/tabulator.min.js"></script>
@@ -230,7 +225,7 @@
     let table;
     let historyTable;
     let currentNaturalQuery = "";
-    let currentSQLQuery = "";
+    let currentSQLQuery = ""; // Aquí se almacenará la consulta base (sin LIMIT/OFFSET)
 
     // Funciones para mostrar y ocultar el spinner
     function showSpinner() {
@@ -277,19 +272,21 @@
           action: function(e, row) {
             let data = row.getData();
             currentNaturalQuery = data.natural;
-            currentSQLQuery = data.sql;
+            currentSQLQuery = data.sql; // Se asume que en el historial se almacena la consulta base
             showModal(currentNaturalQuery, currentSQLQuery);
           }
         }
       ]
     });
 
+    // Función para la consulta inicial (invoca al LLM vía /query)
     async function sendQuery(page = 1, retries = 3) {
       const queryInput = document.getElementById('query-input').value;
       if (!queryInput.trim()) {
         alert("Por favor, ingresa una consulta válida.");
         return;
       }
+      currentNaturalQuery = queryInput; // Guarda la consulta en lenguaje natural
       try {
         showSpinner();
         const response = await fetch(`http://localhost:8000/query?page=${page}&per_page=${perPage}`, {
@@ -301,7 +298,10 @@
           throw new Error("Error al procesar la consulta.");
         }
         const data = await response.json();
+        // Se muestra la consulta SQL generada (con paginación)
         document.getElementById("sql-query").innerText = "Consulta SQL generada:\n" + data.sql_query;
+        // Se extrae la consulta base eliminando la cláusula LIMIT/OFFSET mediante regex
+        currentSQLQuery = data.sql_query.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?;?$/i, ";").trim();
         if (!table) {
           table = new Tabulator("#table-container", {
             layout: "fitColumns",
@@ -327,35 +327,12 @@
       }
     }
 
-    function prevPage() {
-      if (currentPage > 1) {
-        sendQuery(currentPage - 1);
-      }
-    }
-
-    function nextPage() {
-      sendQuery(currentPage + 1);
-    }
-
-    function updatePaginationControls(currentResultCount) {
-      document.getElementById("page-info").innerText = `Página ${currentPage}`;
-      document.getElementById("prev-page").disabled = currentPage === 1;
-      document.getElementById("next-page").disabled = currentResultCount < perPage;
-    }
-
-    function showModal(natural, sql) {
-      document.getElementById("modal-content").innerHTML = `<strong>Consulta:</strong><br>${natural}<br><br><strong>SQL:</strong><br>${sql}`;
-      document.getElementById("overlay").style.display = "flex";
-    }
-
-    function closeModal() {
-      document.getElementById("overlay").style.display = "none";
-    }
-
-    async function executeQuery() {
+    // Nueva función para ejecutar la consulta base con paginación, usando el endpoint /execute_sql
+    async function executeQuery(page = currentPage) {
+      currentPage = page;
       try {
         showSpinner();
-        const response = await fetch(`http://localhost:8000/execute_sql?page=${currentPage}&per_page=${perPage}`, {
+        const response = await fetch(`http://localhost:8000/execute_sql?page=${page}&per_page=${perPage}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -381,12 +358,37 @@
         }
         currentPage = data.page;
         updatePaginationControls(data.result.length);
-        closeModal();
       } catch (error) {
         alert(error.message);
       } finally {
         hideSpinner();
       }
+    }
+
+    // Los botones de paginación usan la función executeQuery para reutilizar la consulta base
+    function prevPage() {
+      if (currentPage > 1) {
+        executeQuery(currentPage - 1);
+      }
+    }
+
+    function nextPage() {
+      executeQuery(currentPage + 1);
+    }
+
+    function updatePaginationControls(currentResultCount) {
+      document.getElementById("page-info").innerText = `Página ${currentPage}`;
+      document.getElementById("prev-page").disabled = currentPage === 1;
+      document.getElementById("next-page").disabled = currentResultCount < perPage;
+    }
+
+    function showModal(natural, sql) {
+      document.getElementById("modal-content").innerHTML = `<strong>Consulta:</strong><br>${natural}<br><br><strong>SQL:</strong><br>${sql}`;
+      document.getElementById("overlay").style.display = "flex";
+    }
+
+    function closeModal() {
+      document.getElementById("overlay").style.display = "none";
     }
 
     function transformSchemaToTreeData(schema) {
