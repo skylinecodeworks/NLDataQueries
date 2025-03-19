@@ -1,12 +1,13 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import create_engine, MetaData, text
+from sqlalchemy import create_engine, MetaData, Table, inspect, text
 import uvicorn
 from dotenv import load_dotenv
 import os
 import subprocess
 import asyncio
 import psycopg2
+import re
 
 # Cargar variables de entorno desde el fichero .env
 load_dotenv()
@@ -23,7 +24,6 @@ better_prompt = "Es extremadamente importante que la respuesta a esta consulta d
 "debe empezar por la palabra SELECT y terminar con un punto y coma. Si la respuesta no cumple con estos requisitos, " \
 "el modelo no podra evaluarla correctamente. Por favor, asegurate de que la respuesta sea una consulta sql valida."
 
-
 app = FastAPI(title="NLDataQueries: Consulta en Lenguaje Natural a SQL")
 
 # Variable global para almacenar el esquema actualizado
@@ -31,12 +31,24 @@ current_schema = {}
 
 def get_db_schema() -> dict:
     """
-    Realiza la introspección del esquema actual de la base de datos utilizando el esquema definido.
+    Realiza la introspección del esquema actual de la base de datos con detalles completos de las tablas.
     """
-    metadata.reflect(engine, schema=SCHEMA)
+    inspector = inspect(engine)
     schema_info = {}
-    for table_name, table in metadata.tables.items():
-        schema_info[table_name] = [col.name for col in table.columns]
+    for table_name in inspector.get_table_names(schema=SCHEMA):
+        columns = inspector.get_columns(table_name, schema=SCHEMA)
+        foreign_keys = inspector.get_foreign_keys(table_name, schema=SCHEMA)
+        primary_keys = inspector.get_pk_constraint(table_name, schema=SCHEMA)
+        
+        schema_info[table_name] = {
+            "columns": {col["name"]: str(col["type"]) for col in columns},
+            "primary_keys": primary_keys.get("constrained_columns", []),
+            "foreign_keys": {
+                fk["constrained_columns"][0]: fk["referred_table"] + "(" + fk["referred_columns"][0] + ")"
+                for fk in foreign_keys if fk["constrained_columns"]
+            }
+        }
+    print("Esquema de la base de datos actualizado:", schema_info)
     return schema_info
 
 async def listen_for_schema_changes():
@@ -75,18 +87,26 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     sql_query: str
     result: list
+    total_rows: int
+    page: int
+    per_page: int
 
-def local_llm_generate(natural_language_query: str, schema_info: dict, examples: list) -> str:
+def local_llm_generate(natural_language_query: str, schema_info: dict, examples: list, limit: int, offset: int) -> str:
     """
-    Usa Ollama (Mistral) para generar una consulta SQL válida basada en el esquema real de la base de datos.
+    Usa Ollama (Mistral) para generar una consulta SQL válida basada en el esquema real de la base de datos con paginación.
     """
-    prompt = "Genera una consulta SQL basada en el siguiente esquema de base de datos.\n"
-    prompt += "Asegúrate de que la consulta use exclusivamente las tablas y columnas listadas a continuación.\n\n"
+    prompt = (
+        "Genera una consulta SQL basada en el siguiente esquema de base de datos. "
+        "Asegúrate de que la consulta use exclusivamente las tablas y columnas listadas a continuación. "
+        "Incluye siempre la cláusula ORDER BY para una paginación efectiva. "
+        f"Usa LIMIT {limit} OFFSET {offset} para manejar la paginación.\n"
+    )
     
     # Agregar información del esquema al prompt
     prompt += "### Esquema de la base de datos:\n"
-    for table, columns in schema_info.items():
-        prompt += f"- Tabla: {table} (Columnas: {', '.join(columns)})\n"
+    for table, details in schema_info.items():
+        columns_info = ", ".join([f"{col} ({dtype})" for col, dtype in details["columns"].items()])
+        prompt += f"- Tabla: {table} (Columnas: {columns_info})\n"
 
     # Incluir ejemplos previos para mejorar la precisión del modelo
     prompt += "\n### Ejemplos de consultas SQL válidas:\n"
@@ -106,9 +126,11 @@ def local_llm_generate(natural_language_query: str, schema_info: dict, examples:
         )
         sql_output = result.stdout.strip()
 
-        # Extraer solo la consulta SQL y validar su contenido
+        # Limpieza del formato ```sql ... ```
+        sql_output = re.sub(r"```(sql)?", "", sql_output, flags=re.IGNORECASE).strip()
+
         if any(table in sql_output for table in schema_info.keys()) and "SELECT" in sql_output.upper():
-            return sql_output.split(";")[0] + ";"  # Devolver solo la primera consulta válida
+            return sql_output.split(";")[0] + f" LIMIT {limit} OFFSET {offset}" if "LIMIT" not in sql_output else sql_output.split(";")[0] + ";"
         else:
             return "ERROR: La consulta generada no coincide con el esquema de la base de datos."
 
@@ -117,14 +139,14 @@ def local_llm_generate(natural_language_query: str, schema_info: dict, examples:
 
 
 @app.post("/query", response_model=QueryResponse)
-async def process_query(query_req: QueryRequest):
+async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per_page: int = Query(10, ge=1, le=100)):
     """
-    Procesa la consulta en lenguaje natural, generando y ejecutando una consulta SQL válida.
+    Procesa la consulta en lenguaje natural con soporte de paginación.
     """
     examples = ["SELECT * FROM users WHERE created_at >= NOW() - INTERVAL '30 days';"]
-    sql_query = local_llm_generate(query_req.natural_language_query, current_schema, examples)
+    offset = (page - 1) * per_page
+    sql_query = local_llm_generate(query_req.natural_language_query, current_schema, examples, per_page, offset)
 
-    # Validar si la consulta hace referencia a tablas del esquema
     if not any(table in sql_query for table in current_schema.keys()):
         raise HTTPException(status_code=400, detail="La consulta generada no hace referencia a tablas válidas en el esquema.")
 
@@ -132,11 +154,11 @@ async def process_query(query_req: QueryRequest):
         with engine.connect() as conn:
             result_proxy = conn.execute(text(sql_query))
             result = [dict(row._mapping) for row in result_proxy]
+            total_rows = len(result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error al ejecutar la consulta SQL: {str(e)}")
     
-    return QueryResponse(sql_query=sql_query, result=result)
-
+    return QueryResponse(sql_query=sql_query, result=result, total_rows=total_rows, page=page, per_page=per_page)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
