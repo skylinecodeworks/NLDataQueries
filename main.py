@@ -8,6 +8,9 @@ import subprocess
 import asyncio
 import psycopg2
 import re
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+
 
 # Cargar variables de entorno desde el fichero .env
 load_dotenv()
@@ -25,6 +28,14 @@ better_prompt = "Es extremadamente importante que la respuesta a esta consulta d
 "el modelo no podra evaluarla correctamente. Por favor, asegurate de que la respuesta sea una consulta sql valida."
 
 app = FastAPI(title="NLDataQueries: Consulta en Lenguaje Natural a SQL")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Permite cualquier origen, restringe esto en producción
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite todos los métodos HTTP
+    allow_headers=["*"],  # Permite todos los headers
+)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Variable global para almacenar el esquema actualizado
 current_schema = {}
@@ -159,6 +170,14 @@ async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per
         raise HTTPException(status_code=400, detail=f"Error al ejecutar la consulta SQL: {str(e)}")
     
     return QueryResponse(sql_query=sql_query, result=result, total_rows=total_rows, page=page, per_page=per_page)
+
+
+@app.get("/")
+async def serve_ui():
+    """
+    Sirve la interfaz de usuario desde el archivo ui.html.
+    """
+    return FileResponse(os.path.join(BASE_DIR, "ui.html"))
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
