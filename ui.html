@@ -73,6 +73,11 @@
       justify-content: space-between;
       margin-top: 10px;
     }
+    .download-controls {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 10px;
+    }
     .overlay {
       display: none;
       position: fixed;
@@ -226,8 +231,11 @@
       <div id="table-container"></div>
       <div class="pagination-controls">
         <button onclick="prevPage()" id="prev-page" disabled>Página Anterior</button>
-        <span id="page-info">1</span>
+        <span id="page-info">&nbsp;1&nbsp;</span>
         <button onclick="nextPage()" id="next-page">Página Siguiente</button>
+      </div>
+      <div class="download-controls">
+        <button id="download-csv" onclick="downloadCSV()" style="display:none;">Descargar CSV</button>
       </div>
     </div>
   </div>
@@ -350,17 +358,31 @@
             currentSQLQuery = data.sql_query.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?;?$/i, ";").trim();
             if (!table) {
                 table = new Tabulator("#table-container", {
-                layout: "fitColumns",
-                pagination: "local",
-                paginationSize: perPage,
-                autoColumns: true,
-                data: data.result
+                    layout: "fitColumns",
+                    pagination: false,
+                    movableColumns: true,
+                    resizableRows: true,
+                    tooltips: true,
+                    addRowPos: "top",
+                    history: true,
+                    clipboard: true,
+                    downloadConfig: {
+                        columnHeaders: true,
+                        columnGroups: false,
+                        rowGroups: false,
+                        columnCalcs: false,
+                        dataTree: false,
+                    },
+                    layout: "fitData",
+                    autoColumns: true,
+                    data: data.result
                 });
             } else {
                 table.setData(data.result);
             }
             currentPage = page;
             updatePaginationControls(data.result.length);
+            document.getElementById("download-csv").style.display = "block";
             success = true;
             } catch (error) {
             if (retries > 0) {
@@ -408,6 +430,7 @@
         } else {
           table.setData(data.result);
         }
+        document.getElementById("download-csv").style.display = "block";
         currentPage = data.page;
         updatePaginationControls(data.result.length);
       } catch (error) {
@@ -429,7 +452,7 @@
     }
 
     function updatePaginationControls(currentResultCount) {
-      document.getElementById("page-info").innerText = `${currentPage}`;
+      document.getElementById("page-info").innerText = ` ${currentPage} `;
       document.getElementById("prev-page").disabled = currentPage === 1;
       document.getElementById("next-page").disabled = currentResultCount < perPage;
     }
@@ -487,6 +510,41 @@
         hideSpinner();
       }
     }
+
+    function downloadCSV() {
+        showSpinner();
+        fetch("http://localhost:8000/download_csv", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+            natural_language_query: currentNaturalQuery,
+            sql_query: currentSQLQuery
+            })
+        })
+        .then(response => {
+            if (!response.ok) {
+            throw new Error("Error al descargar CSV");
+            }
+            return response.blob();
+        })
+        .then(blob => {
+            hideSpinner();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "results.csv";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+            document.getElementById("download-csv").style.display = "none";
+        })
+        .catch(error => {
+            hideSpinner();
+            alert(error.message);
+        });
+    }
+
 
     // Inicializa la carga de historial y esquema
     loadHistory();

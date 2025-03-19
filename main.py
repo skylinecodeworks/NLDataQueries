@@ -306,5 +306,37 @@ async def serve_ui():
     """
     return FileResponse(os.path.join(BASE_DIR, "ui.html"))
 
+@app.post("/download_csv")
+async def download_csv(request: ExecuteSQLRequest):
+    """
+    Ejecuta la consulta SQL base (sin paginación) y devuelve los resultados en un archivo CSV.
+    """
+    base_sql_query = request.sql_query.strip()
+    try:
+        with engine.connect() as conn:
+            result_proxy = conn.execute(text(base_sql_query))
+            result = [dict(row._mapping) for row in result_proxy]
+            # Intentamos obtener los nombres de las columnas directamente desde result_proxy
+            columns = result_proxy.keys() if result_proxy.keys() else (result[0].keys() if result else [])
+            
+            import csv
+            import io
+            output = io.StringIO()
+            csv_writer = csv.DictWriter(output, fieldnames=columns)
+            csv_writer.writeheader()
+            csv_writer.writerows(result)
+            csv_data = output.getvalue()
+            output.close()
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=f"Error al ejecutar la consulta SQL: {str(e)}")
+    
+    from fastapi.responses import Response
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=results.csv"}
+    )
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
