@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import create_engine, MetaData, Table, inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 import uvicorn
 from dotenv import load_dotenv
 import os
@@ -10,6 +11,8 @@ import psycopg2
 import re
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List
+
 
 
 # Cargar variables de entorno desde el fichero .env
@@ -36,6 +39,17 @@ app.add_middleware(
     allow_headers=["*"],  # Permite todos los headers
 )
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+class HistoryResponse(BaseModel):
+    total_rows: int
+    page: int
+    per_page: int
+    results: List[dict]
+
+class ExecuteSQLRequest(BaseModel):
+    natural_language_query: str
+    sql_query: str
+
 
 # Variable global para almacenar el esquema actualizado
 current_schema = {}
@@ -148,11 +162,10 @@ def local_llm_generate(natural_language_query: str, schema_info: dict, examples:
     except subprocess.CalledProcessError as e:
         return f"ERROR: Fallo al invocar el LLM: {e.stderr}"
 
-
 @app.post("/query", response_model=QueryResponse)
 async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per_page: int = Query(10, ge=1, le=100)):
     """
-    Procesa la consulta en lenguaje natural con soporte de paginación.
+    Procesa la consulta en lenguaje natural con soporte de paginación y almacena el historial de consultas exitosas.
     """
     examples = ["SELECT * FROM users WHERE created_at >= NOW() - INTERVAL '30 days';"]
     offset = (page - 1) * per_page
@@ -166,10 +179,91 @@ async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per
             result_proxy = conn.execute(text(sql_query))
             result = [dict(row._mapping) for row in result_proxy]
             total_rows = len(result)
-    except Exception as e:
+
+            # Insertar en llm_sql_history con "natural" protegido con comillas dobles
+            insert_query = text("""
+                INSERT INTO llm_sql_history (sql, status, "natural") 
+                VALUES (:sql_query, :status, :natural_query)
+            """)
+            conn.execute(insert_query, {
+                "sql_query": sql_query,
+                "status": True,
+                "natural_query": query_req.natural_language_query
+            })
+            conn.commit()
+
+    except SQLAlchemyError as e:
         raise HTTPException(status_code=400, detail=f"Error al ejecutar la consulta SQL: {str(e)}")
-    
+
     return QueryResponse(sql_query=sql_query, result=result, total_rows=total_rows, page=page, per_page=per_page)
+
+
+@app.get("/history", response_model=HistoryResponse)
+async def get_query_history(page: int = Query(1, ge=1), per_page: int = Query(10, ge=1, le=100)):
+    """
+    Retorna el historial de consultas desde la tabla llm_sql_history de manera paginada, ordenado por id DESC.
+    """
+    offset = (page - 1) * per_page
+
+    try:
+        with engine.connect() as conn:
+            count_query = text("SELECT COUNT(*) FROM llm_sql_history;")
+            total_rows = conn.execute(count_query).scalar()
+
+            history_query = text("""
+                SELECT id, sql, status, "natural"
+                FROM llm_sql_history
+                ORDER BY id DESC
+                LIMIT :limit OFFSET :offset;
+            """)
+
+            result_proxy = conn.execute(history_query, {"limit": per_page, "offset": offset})
+            results = [dict(row._mapping) for row in result_proxy]
+
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=f"Error al recuperar el historial: {str(e)}")
+
+    return HistoryResponse(total_rows=total_rows, page=page, per_page=per_page, results=results)
+
+@app.post("/execute_sql", response_model=QueryResponse)
+async def execute_sql_query(
+    request: ExecuteSQLRequest,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100)
+):
+    """
+    Ejecuta una consulta SQL específica recibida desde el frontend y la almacena en el historial si es válida.
+    """
+    offset = (page - 1) * per_page
+    sql_query = request.sql_query.strip()
+
+    # Asegurar que la consulta SQL tiene paginación
+    if "LIMIT" not in sql_query.upper():
+        sql_query = f"{sql_query} LIMIT {per_page} OFFSET {offset};"
+
+    try:
+        with engine.connect() as conn:
+            result_proxy = conn.execute(text(sql_query))
+            result = [dict(row._mapping) for row in result_proxy]
+            total_rows = len(result)
+
+            # Guardar la consulta en el historial
+            insert_query = text("""
+                INSERT INTO llm_sql_history (sql, status, "natural") 
+                VALUES (:sql_query, :status, :natural_query)
+            """)
+            conn.execute(insert_query, {
+                "sql_query": sql_query,
+                "status": True,
+                "natural_query": request.natural_language_query
+            })
+            conn.commit()
+
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=f"Error al ejecutar la consulta SQL: {str(e)}")
+
+    return QueryResponse(sql_query=sql_query, result=result, total_rows=total_rows, page=page, per_page=per_page)
+
 
 
 @app.get("/")
