@@ -18,6 +18,7 @@
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+            position: relative;
         }
         textarea {
             width: 100%;
@@ -53,6 +54,23 @@
             justify-content: space-between;
             margin-top: 10px;
         }
+        .spinner {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 50px;
+            height: 50px;
+            border: 5px solid rgba(0, 0, 0, 0.1);
+            border-top: 5px solid #007bff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: translate(-50%, -50%) rotate(0deg); }
+            100% { transform: translate(-50%, -50%) rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -67,12 +85,12 @@
             <span id="page-info">Página 1</span>
             <button onclick="nextPage()" id="next-page">Página Siguiente</button>
         </div>
+        <div class="spinner" id="loading-spinner"></div>
     </div>
     
     <script type="text/javascript" src="https://unpkg.com/tabulator-tables/dist/js/tabulator.min.js"></script>
     <script>
         let currentPage = 1;
-
         let perPage = 5;
         let totalRows = 0;
         let table;
@@ -84,37 +102,44 @@
                 return;
             }
             
-            const response = await fetch(`http://localhost:8000/query?page=${currentPage}&per_page=${perPage}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ natural_language_query: queryInput })
-            });
+            document.getElementById('loading-spinner').style.display = 'block';
             
-            if (!response.ok) {
-                alert("Error al procesar la consulta.");
-                return;
-            }
-            
-            const data = await response.json();
-            totalRows = data.total_rows;
-            
-            document.getElementById('sql-query').innerText = "Consulta SQL generada:\n" + data.sql_query;
-            
-            if (!table) {
-                table = new Tabulator("#table-container", {
-                    layout: "fitColumns",
-                    pagination: "local",
-                    paginationSize: perPage,
-                    autoColumns: true,
-                    data: data.result
+            try {
+                const response = await fetch(`http://localhost:8000/query?page=${currentPage}&per_page=${perPage}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ natural_language_query: queryInput })
                 });
-            } else {
-                table.setData(data.result);
+                
+                if (!response.ok) {
+                    throw new Error("Error al procesar la consulta.");
+                }
+                
+                const data = await response.json();
+                totalRows = data.total_rows;
+                
+                document.getElementById('sql-query').innerText = "Consulta SQL generada:\n" + data.sql_query;
+                
+                if (!table) {
+                    table = new Tabulator("#table-container", {
+                        layout: "fitColumns",
+                        pagination: "local",
+                        paginationSize: perPage,
+                        autoColumns: true,
+                        data: data.result
+                    });
+                } else {
+                    table.setData(data.result);
+                }
+                
+                document.getElementById('page-info').innerText = `Página ${data.page}`;
+                document.getElementById('prev-page').disabled = currentPage === 1;
+                document.getElementById('next-page').disabled = (currentPage * perPage) >= totalRows;
+            } catch (error) {
+                alert(error.message);
+            } finally {
+                document.getElementById('loading-spinner').style.display = 'none';
             }
-            
-            document.getElementById('page-info').innerText = `Página ${data.page}`;
-            document.getElementById('prev-page').disabled = currentPage === 1;
-            document.getElementById('next-page').disabled = (currentPage * perPage) >= totalRows;
         }
         
         function nextPage() {
