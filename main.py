@@ -293,5 +293,18 @@ async def serve_ui():
     """
     return FileResponse(os.path.join(BASE_DIR, "ui.html"))
 
+@app.get("/image/{image_name}")
+async def serve_image(image_name: str):
+    """
+    Sirve imágenes estáticas desde la carpeta images.
+    """
+    return FileResponse(os.path.join(BASE_DIR, "images", image_name))
+
+async def serve_ui():
+    """
+    Sirve la interfaz de usuario desde el archivo ui.html.
+    """
+    return FileResponse(os.path.join(BASE_DIR, "ui.html"))
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

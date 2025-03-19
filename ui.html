@@ -171,11 +171,11 @@
 <body>
   <!-- Header con Bootstrap -->
   <header>
-    <nav class="navbar navbar-expand-lg navbar-light bg-light">
-      <div class="container-fluid">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+      <div class="container-fluid vertical-align">
         <!-- Logo a la izquierda -->
         <a class="navbar-brand" href="#">
-          <img src="skylinecodeworks.jpeg" alt="Logo" width="30" height="30" class="d-inline-block align-text-top">
+          <img src="/image/logo.jpg" alt="Logo" width="30" height="30" class="d-inline-block align-text-top">
           NLDataQueries
         </a>
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" 
@@ -395,6 +395,7 @@
           throw new Error("Error al ejecutar la consulta SQL.");
         }
         const data = await response.json();
+        document.getElementById("query-input").value = currentNaturalQuery;
         document.getElementById("sql-query").innerText = "Consulta SQL ejecutada:\n" + data.sql_query;
         if (!table) {
           table = new Tabulator("#table-container", {
