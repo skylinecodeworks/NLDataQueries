@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NLDataQueries</title>
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://unpkg.com/tabulator-tables/dist/css/tabulator.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css" />
   <style>
@@ -83,7 +85,7 @@
       align-items: center;
       z-index: 1000;
     }
-    .modal {
+    .custom-modal {
       background: white;
       padding: 20px;
       border-radius: 8px;
@@ -167,6 +169,47 @@
   </style>
 </head>
 <body>
+  <!-- Header con Bootstrap -->
+  <header>
+    <nav class="navbar navbar-expand-lg navbar-light bg-light">
+      <div class="container-fluid">
+        <!-- Logo a la izquierda -->
+        <a class="navbar-brand" href="#">
+          <img src="skylinecodeworks.jpeg" alt="Logo" width="30" height="30" class="d-inline-block align-text-top">
+          NLDataQueries
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" 
+                aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <!-- Menús desplegables a la derecha -->
+        <div class="collapse navbar-collapse justify-content-end" id="navbarSupportedContent">
+          <ul class="navbar-nav mb-2 mb-lg-0">
+            <!-- Menú Configurar -->
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" id="configDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                Configurar
+              </a>
+              <ul class="dropdown-menu" aria-labelledby="configDropdown">
+                <li><a class="dropdown-item" href="#">LLM</a></li>
+              </ul>
+            </li>
+            <!-- Menú Ayuda -->
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" id="ayudaDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                Ayuda
+              </a>
+              <ul class="dropdown-menu" aria-labelledby="ayudaDropdown">
+                <li><a class="dropdown-item" href="#">FAQ</a></li>
+                <li><a class="dropdown-item" href="#">Skyline Codeworks</a></li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+  </header>
+
   <div class="content-wrapper">
     <!-- Sidebar del historial -->
     <div class="sidebar">
@@ -183,7 +226,7 @@
       <div id="table-container"></div>
       <div class="pagination-controls">
         <button onclick="prevPage()" id="prev-page" disabled>Página Anterior</button>
-        <span id="page-info">Página 1</span>
+        <span id="page-info">1</span>
         <button onclick="nextPage()" id="next-page">Página Siguiente</button>
       </div>
     </div>
@@ -197,7 +240,7 @@
 
   <!-- Overlay para mostrar detalles del historial -->
   <div class="overlay" id="overlay">
-    <div class="modal">
+    <div class="custom-modal">
       <h3>Detalle de Consulta</h3>
       <div class="modal-content" id="modal-content"></div>
       <div class="modal-buttons">
@@ -206,6 +249,7 @@
       </div>
     </div>
   </div>
+  
 
   <!-- Loading Spinner -->
   <div id="loading-spinner">
@@ -219,6 +263,8 @@
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/jstree.min.js"></script>
   <script type="text/javascript" src="https://unpkg.com/tabulator-tables/dist/js/tabulator.min.js"></script>
+  <!-- Bootstrap Bundle JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     let currentPage = 1;
     let perPage = 5;
@@ -279,53 +325,58 @@
       ]
     });
 
-    // Función para la consulta inicial (invoca al LLM vía /query)
     async function sendQuery(page = 1, retries = 3) {
-      const queryInput = document.getElementById('query-input').value;
-      if (!queryInput.trim()) {
-        alert("Por favor, ingresa una consulta válida.");
-        return;
-      }
-      currentNaturalQuery = queryInput; // Guarda la consulta en lenguaje natural
-      try {
-        showSpinner();
-        const response = await fetch(`http://localhost:8000/query?page=${page}&per_page=${perPage}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ natural_language_query: queryInput })
-        });
-        if (!response.ok) {
-          throw new Error("Error al procesar la consulta.");
+        const queryInput = document.getElementById('query-input').value;
+        if (!queryInput.trim()) {
+            alert("Por favor, ingresa una consulta válida.");
+            return;
         }
-        const data = await response.json();
-        // Se muestra la consulta SQL generada (con paginación)
-        document.getElementById("sql-query").innerText = "Consulta SQL generada:\n" + data.sql_query;
-        // Se extrae la consulta base eliminando la cláusula LIMIT/OFFSET mediante regex
-        currentSQLQuery = data.sql_query.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?;?$/i, ";").trim();
-        if (!table) {
-          table = new Tabulator("#table-container", {
-            layout: "fitColumns",
-            pagination: "local",
-            paginationSize: perPage,
-            autoColumns: true,
-            data: data.result
-          });
-        } else {
-          table.setData(data.result);
+        currentNaturalQuery = queryInput;
+        showSpinner(); // Se muestra el spinner una vez al iniciar
+
+        let success = false;
+        while (retries >= 0 && !success) {
+            try {
+            const response = await fetch(`http://localhost:8000/query?page=${page}&per_page=${perPage}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ natural_language_query: queryInput })
+            });
+            if (!response.ok) {
+                throw new Error("Error al procesar la consulta.");
+            }
+            const data = await response.json();
+            document.getElementById("sql-query").innerText = "Consulta SQL generada:\n" + data.sql_query;
+            currentSQLQuery = data.sql_query.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?;?$/i, ";").trim();
+            if (!table) {
+                table = new Tabulator("#table-container", {
+                layout: "fitColumns",
+                pagination: "local",
+                paginationSize: perPage,
+                autoColumns: true,
+                data: data.result
+                });
+            } else {
+                table.setData(data.result);
+            }
+            currentPage = page;
+            updatePaginationControls(data.result.length);
+            success = true;
+            } catch (error) {
+            if (retries > 0) {
+                showAlert("Error en la consulta. Reintentando...");
+                retries--;
+                // Puedes agregar un pequeño retardo antes de reintentar
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                alert(error.message);
+                break;
+            }
+            }
         }
-        currentPage = page;
-        updatePaginationControls(data.result.length);
-      } catch (error) {
-        if (retries > 0) {
-          showAlert("Error en la consulta. Reintentando...");
-          sendQuery(page, retries - 1);
-        } else {
-          alert(error.message);
-        }
-      } finally {
-        hideSpinner();
-      }
+        hideSpinner(); // Se oculta el spinner solo cuando se termina el proceso de reintentos
     }
+
 
     // Nueva función para ejecutar la consulta base con paginación, usando el endpoint /execute_sql
     async function executeQuery(page = currentPage) {
@@ -377,7 +428,7 @@
     }
 
     function updatePaginationControls(currentResultCount) {
-      document.getElementById("page-info").innerText = `Página ${currentPage}`;
+      document.getElementById("page-info").innerText = `${currentPage}`;
       document.getElementById("prev-page").disabled = currentPage === 1;
       document.getElementById("next-page").disabled = currentResultCount < perPage;
     }
