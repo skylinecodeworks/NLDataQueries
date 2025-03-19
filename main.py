@@ -1,11 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import create_engine, MetaData
+from sqlalchemy import create_engine, MetaData, text
 import uvicorn
 from dotenv import load_dotenv
 import os
 import subprocess
 import asyncio
+import psycopg2
 
 # Cargar variables de entorno desde el fichero .env
 load_dotenv()
@@ -16,19 +17,17 @@ SCHEMA = os.getenv("SCHEMA", "public")
 engine = create_engine(DATABASE_URL)
 metadata = MetaData()
 
+better_prompt = "Es extremadamente importante que la respuesta a esta consulta debe ser unica y exclusivamente una " \
+"consulta sql standard que pueda ser ejecutada en una base de datos postgresql sin incorporar headers ni footers ni " \
+"conclusiones, solo texto sql que pudiera ser ejecutado en una consola de base de datos. El comienzo de la respuesta " \
+"debe empezar por la palabra SELECT y terminar con un punto y coma. Si la respuesta no cumple con estos requisitos, " \
+"el modelo no podra evaluarla correctamente. Por favor, asegurate de que la respuesta sea una consulta sql valida."
+
 
 app = FastAPI(title="NLDataQueries: Consulta en Lenguaje Natural a SQL")
 
 # Variable global para almacenar el esquema actualizado
 current_schema = {}
-
-# Modelos de datos para la API
-class QueryRequest(BaseModel):
-    natural_language_query: str
-
-class QueryResponse(BaseModel):
-    sql_query: str
-    result: list
 
 def get_db_schema() -> dict:
     """
@@ -40,107 +39,104 @@ def get_db_schema() -> dict:
         schema_info[table_name] = [col.name for col in table.columns]
     return schema_info
 
-async def update_schema_periodically(interval: int = 60):
+async def listen_for_schema_changes():
     """
-    Tarea en segundo plano que actualiza el esquema de la base de datos cada 'interval' segundos.
+    Escucha eventos de cambios en la estructura de la base de datos usando PostgreSQL NOTIFY.
     """
     global current_schema
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.set_isolation_level(0)  # Permitir escuchar eventos
+    cursor = conn.cursor()
+    cursor.execute("LISTEN schema_update;")
+    print("Escuchando cambios en el esquema de la base de datos...")
+    
     while True:
-        try:
+        conn.poll()
+        while conn.notifies:
+            notify = conn.notifies.pop(0)
+            print(f"Cambio detectado en la base de datos: {notify.payload}")
             current_schema = get_db_schema()
-            print("Esquema actualizado:", current_schema)
-        except Exception as e:
-            print("Error al actualizar el esquema:", e)
-        await asyncio.sleep(interval)
-
-def load_example_queries(file_path: str) -> list:
-    """
-    Carga las consultas de ejemplo desde el fichero especificado.
-    Se espera que el fichero contenga consultas separadas por punto y coma.
-    """
-    examples = []
-    try:
-        with open(file_path, "r", encoding="utf-8") as file:
-            content = file.read()
-            # Dividir las consultas y eliminar espacios en blanco
-            queries = [q.strip() for q in content.split(";") if q.strip()]
-            examples.extend(queries)
-    except Exception as e:
-        print(f"Error al cargar el archivo de consultas de ejemplo: {e}")
-    return examples
-
-def generate_sql_query(natural_language_query: str, schema_info: dict, examples: list) -> str:
-    """
-    Construye un prompt combinando:
-      - La descripción del esquema de la base de datos.
-      - Los ejemplos de consultas leídos desde queries.sql (para que el modelo aprenda a tratar la información).
-      - La consulta en lenguaje natural.
-    
-    Se invoca al LLM local a través de Ollama (modelo mistral:latest) para transformar el prompt en una consulta SQL.
-    """
-    prompt = "A partir de los siguientes ejemplos, aprende a tratar la información de la base de datos y genera la consulta SQL adecuada.\n\n"
-    prompt += "Esquema de la base de datos:\n"
-    for table, columns in schema_info.items():
-        prompt += f"- Tabla {table}: columnas {', '.join(columns)}\n"
-    prompt += "\nEjemplos de consultas (desde queries.sql):\n"
-    for ex in examples:
-        prompt += f"- {ex}\n"
-    prompt += f"\nConsulta en lenguaje natural: {natural_language_query}\n"
-    prompt += "\nGenera la consulta SQL correspondiente utilizando SQL estándar."
-    
-    sql_query = local_llm_generate(prompt)
-    return sql_query
-
-def local_llm_generate(prompt: str) -> str:
-    """
-    Invoca el modelo mistral:latest de Ollama para generar la consulta SQL a partir del prompt.
-    Se usa `subprocess.run` para ejecutar el comando y capturar la salida.
-    """
-    try:
-        result = subprocess.run(
-            ["ollama", "run", "mistral:latest"],
-            input=prompt,  # Pasa el prompt como entrada estándar
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return result.stdout.strip()  # Devuelve la consulta SQL generada por el modelo
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Error al invocar el LLM: {e.stderr}")
-
+        await asyncio.sleep(1)
 
 @app.on_event("startup")
 async def startup_event():
     """
     Al iniciar la aplicación:
       - Se actualiza el esquema de la base de datos.
-      - Se lanza una tarea en segundo plano para refrescar el esquema periódicamente.
+      - Se lanza una tarea en segundo plano para escuchar cambios en la estructura.
     """
     global current_schema
     current_schema = get_db_schema()
-    asyncio.create_task(update_schema_periodically(60))
+    asyncio.create_task(listen_for_schema_changes())
+
+class QueryRequest(BaseModel):
+    natural_language_query: str
+
+class QueryResponse(BaseModel):
+    sql_query: str
+    result: list
+
+def local_llm_generate(natural_language_query: str, schema_info: dict, examples: list) -> str:
+    """
+    Usa Ollama (Mistral) para generar una consulta SQL válida basada en el esquema real de la base de datos.
+    """
+    prompt = "Genera una consulta SQL basada en el siguiente esquema de base de datos.\n"
+    prompt += "Asegúrate de que la consulta use exclusivamente las tablas y columnas listadas a continuación.\n\n"
+    
+    # Agregar información del esquema al prompt
+    prompt += "### Esquema de la base de datos:\n"
+    for table, columns in schema_info.items():
+        prompt += f"- Tabla: {table} (Columnas: {', '.join(columns)})\n"
+
+    # Incluir ejemplos previos para mejorar la precisión del modelo
+    prompt += "\n### Ejemplos de consultas SQL válidas:\n"
+    for ex in examples:
+        prompt += f"- {ex}\n"
+    
+    prompt += f"\n### Consulta en lenguaje natural:\n{natural_language_query}\n"
+    prompt += "\n### Responde únicamente con la consulta SQL correspondiente (sin explicaciones ni comentarios)." + better_prompt
+
+    try:
+        result = subprocess.run(
+            ["ollama", "run", "mistral:latest"],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        sql_output = result.stdout.strip()
+
+        # Extraer solo la consulta SQL y validar su contenido
+        if any(table in sql_output for table in schema_info.keys()) and "SELECT" in sql_output.upper():
+            return sql_output.split(";")[0] + ";"  # Devolver solo la primera consulta válida
+        else:
+            return "ERROR: La consulta generada no coincide con el esquema de la base de datos."
+
+    except subprocess.CalledProcessError as e:
+        return f"ERROR: Fallo al invocar el LLM: {e.stderr}"
+
 
 @app.post("/query", response_model=QueryResponse)
 async def process_query(query_req: QueryRequest):
     """
-    Endpoint que procesa la consulta en lenguaje natural.
-    1. Utiliza el esquema actualizado automáticamente.
-    2. Carga los ejemplos desde /sql/queries.sql para que el modelo aprenda a tratar la información.
-    3. Genera la consulta SQL a partir del prompt y del LLM local.
-    4. Ejecuta la consulta en PostgreSQL y retorna el resultado.
+    Procesa la consulta en lenguaje natural, generando y ejecutando una consulta SQL válida.
     """
-    examples = load_example_queries("sql/queries.sql")
-    if not examples:
-        examples = ["Ejemplo: SELECT * FROM ventas WHERE fecha >= '2023-01-01';"]
-    sql_query = generate_sql_query(query_req.natural_language_query, current_schema, examples)
+    examples = ["SELECT * FROM users WHERE created_at >= NOW() - INTERVAL '30 days';"]
+    sql_query = local_llm_generate(query_req.natural_language_query, current_schema, examples)
+
+    # Validar si la consulta hace referencia a tablas del esquema
+    if not any(table in sql_query for table in current_schema.keys()):
+        raise HTTPException(status_code=400, detail="La consulta generada no hace referencia a tablas válidas en el esquema.")
+
     try:
         with engine.connect() as conn:
-            result_proxy = conn.execute(sql_query)
-            result = [dict(row) for row in result_proxy]
+            result_proxy = conn.execute(text(sql_query))
+            result = [dict(row._mapping) for row in result_proxy]
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error al ejecutar la consulta SQL: {str(e)}")
     
     return QueryResponse(sql_query=sql_query, result=result)
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
