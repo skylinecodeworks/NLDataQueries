@@ -8,17 +8,26 @@
     <style>
         body {
             font-family: Arial, sans-serif;
-            margin: 20px;
+            margin: 0;
+            display: flex;
+            height: 100vh;
             background-color: #f8f9fa;
         }
-        .container {
-            max-width: 900px;
-            margin: auto;
+        .sidebar {
+            width: 300px;
             background: white;
+            padding: 10px;
+            box-shadow: 2px 0px 5px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+        }
+        .main-content {
+            flex-grow: 1;
             padding: 20px;
+            background: white;
             border-radius: 8px;
             box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
             position: relative;
+            margin: 20px;
         }
         textarea {
             width: 100%;
@@ -71,10 +80,20 @@
             0% { transform: translate(-50%, -50%) rotate(0deg); }
             100% { transform: translate(-50%, -50%) rotate(360deg); }
         }
+        h3 {
+            margin-top: 0;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
+    <!-- Sidebar del historial -->
+    <div class="sidebar">
+        <h3>Historial</h3>
+        <div id="history-container"></div>
+    </div>
+
+    <!-- Contenido principal -->
+    <div class="main-content">
         <h2>Consulta en Lenguaje Natural</h2>
         <textarea id="query-input" placeholder="Escribe tu consulta en lenguaje natural..."></textarea>
         <button onclick="sendQuery()">Ejecutar Consulta</button>
@@ -94,6 +113,36 @@
         let perPage = 5;
         let totalRows = 0;
         let table;
+        let historyTable;
+
+        // Cargar historial de consultas
+        async function loadHistory() {
+            try {
+                const response = await fetch(`http://localhost:8000/history?page=1&per_page=20`);
+                if (!response.ok) throw new Error("Error al obtener el historial.");
+
+                const data = await response.json();
+                historyTable.setData(data.results);
+            } catch (error) {
+                console.error(error.message);
+            }
+        }
+
+        // Configurar tabla de historial
+        historyTable = new Tabulator("#history-container", {
+            layout: "fitColumns",
+            height: "80vh",
+            columns: [
+                { title: "Consulta", field: "natural", formatter: "textarea", widthGrow: 2 },
+            ],
+            rowClick: function(e, row) {
+                document.getElementById('query-input').value = row.getData().natural;
+                sendQuery();
+            }
+        });
+
+        // Cargar historial al iniciar
+        loadHistory();
 
         async function sendQuery() {
             const queryInput = document.getElementById('query-input').value;
@@ -135,6 +184,10 @@
                 document.getElementById('page-info').innerText = `Página ${data.page}`;
                 document.getElementById('prev-page').disabled = currentPage === 1;
                 document.getElementById('next-page').disabled = (currentPage * perPage) >= totalRows;
+
+                // Recargar historial después de ejecutar consulta
+                loadHistory();
+
             } catch (error) {
                 alert(error.message);
             } finally {
