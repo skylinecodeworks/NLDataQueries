@@ -166,6 +166,27 @@
       height: 80px;
       animation: spin 1s linear infinite;
     }
+    /* Spinner verde para sugerencia de gráfico */
+    #chart-loading-spinner {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(40, 167, 69, 0.2); /* Verde translúcido */
+      justify-content: center;
+      align-items: center;
+      z-index: 1200;
+    }
+    .green-spinner {
+      border: 12px solid #e0e0e0;
+      border-top: 12px solid #28a745; /* Verde */
+      border-radius: 50%;
+      width: 80px;
+      height: 80px;
+      animation: spin 1s linear infinite;
+    }
     @keyframes spin {
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
@@ -257,8 +278,12 @@
       </div>
 
       <!-- Contenedor para el gráfico sugerido -->
-      <div id="chart-container" style="margin-top: 20px;">
+      <div id="chart-container" style="margin-top: 20px; position: relative;">
         <canvas id="myChart" width="600" height="300"></canvas>
+        <!-- Spinner verde para cuando se llame a /suggest_chart -->
+        <div id="chart-loading-spinner">
+          <div class="green-spinner"></div>
+        </div>
       </div>
 
     </div>
@@ -299,17 +324,17 @@
 
   <script>
     let currentPage = 1;
-    let perPage = 5;
+    let perPage = 100;
     let table;
     let historyTable;
     let currentNaturalQuery = "";
-    let currentSQLQuery = ""; // Aquí se almacenará la consulta base (sin LIMIT/OFFSET)
-    let currentData = [];     // Aquí guardamos la data resultante de la consulta
+    let currentSQLQuery = ""; // Almacena la consulta base sin paginación
+    let currentData = [];     // Almacena la data resultante de la consulta
 
-    // Instancia global de Chart.js para poder destruirla al actualizar
+    // Instancia global de Chart.js para poder actualizar el gráfico
     let chartInstance = null;
 
-    // Funciones para mostrar/ocultar spinner
+    // Funciones para mostrar/ocultar spinner global
     function showSpinner() {
       document.getElementById("loading-spinner").style.display = "flex";
     }
@@ -317,7 +342,7 @@
       document.getElementById("loading-spinner").style.display = "none";
     }
 
-    // Función para mostrar el mensaje emergente
+    // Función para mostrar mensaje emergente
     function showAlert(message) {
       const alert = document.getElementById("alert");
       alert.innerText = message;
@@ -354,7 +379,7 @@
           action: function(e, row) {
             let data = row.getData();
             currentNaturalQuery = data.natural;
-            currentSQLQuery = data.sql; // Se asume que en el historial se almacena la consulta base
+            currentSQLQuery = data.sql;
             showModal(currentNaturalQuery, currentSQLQuery);
           }
         }
@@ -363,8 +388,7 @@
 
     /**
      * Envía la consulta en lenguaje natural al endpoint /query.
-     * Tras obtener los datos, setea la tabla y solicita una sugerencia de gráfico
-     * para mostrarlo automáticamente.
+     * Al recibir la data, se actualiza la tabla y se solicita la sugerencia de gráfico.
      */
     async function sendQuery(page = 1, retries = 3) {
       const queryInput = document.getElementById('query-input').value;
@@ -373,7 +397,7 @@
         return;
       }
       currentNaturalQuery = queryInput;
-      showSpinner(); // Spinner al iniciar
+      showSpinner();
 
       let success = false;
       while (retries >= 0 && !success) {
@@ -388,12 +412,10 @@
           }
           const data = await response.json();
           document.getElementById("sql-query").innerText = "Consulta SQL generada:\n" + data.sql_query;
-
-          // Guardamos la consulta base sin paginación
           currentSQLQuery = data.sql_query.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?;?$/i, ";").trim();
 
-          // Actualizamos la tabla con los resultados
-          currentData = data.result;  // Almacenamos los datos en la variable global
+          // Actualiza la tabla y guarda los datos globalmente
+          currentData = data.result;
           if (!table) {
             table = new Tabulator("#table-container", {
               layout: "fitColumns",
@@ -419,14 +441,13 @@
             table.setData(currentData);
           }
 
-          // Llamamos a la función que obtiene la sugerencia de gráfico y lo muestra
+          // Solicitar sugerencia de gráfico con la data actual
           autoSuggestAndRenderChart(currentData);
 
           currentPage = page;
           updatePaginationControls(currentData.length);
           document.getElementById("download-csv").style.display = "block";
           success = true;
-
         } catch (error) {
           if (retries > 0) {
             showAlert("Error en la consulta. Reintentando...");
@@ -437,7 +458,7 @@
             break;
           }
         } finally {
-          hideSpinner(); // Ocultamos spinner al terminar
+          hideSpinner();
         }
       }
     }
@@ -461,7 +482,6 @@
         const data = await response.json();
         document.getElementById("query-input").value = currentNaturalQuery;
         document.getElementById("sql-query").innerText = "Consulta SQL ejecutada:\n" + data.sql_query;
-
         currentData = data.result;
         if (!table) {
           table = new Tabulator("#table-container", {
@@ -477,10 +497,7 @@
         document.getElementById("download-csv").style.display = "block";
         currentPage = data.page;
         updatePaginationControls(currentData.length);
-
-        // También podrías volver a llamar a autoSuggestAndRenderChart(currentData)
-        // si deseas refrescar el gráfico tras cambiar de página (opcional).
-
+        // Opcional: refrescar gráfico tras cambiar de página
       } catch (error) {
         alert(error.message);
       } finally {
@@ -503,7 +520,7 @@
       document.getElementById("next-page").disabled = currentResultCount < perPage;
     }
 
-    // Modal en historial
+    // Modal para el historial
     function showModal(natural, sql) {
       document.getElementById("modal-content").innerHTML = `<strong>Consulta:</strong><br>${natural}<br><br><strong>SQL:</strong><br>${sql}`;
       document.getElementById("overlay").style.display = "flex";
@@ -523,10 +540,8 @@
           columns.push({ text: `${col}: ${tableData.columns[col]}`, icon: "jstree-file" });
         }
         children.push({ text: "Columns", children: columns });
-
         const primaryKeys = tableData.primary_keys.map(pk => ({ text: pk, icon: "jstree-file" }));
         children.push({ text: "Primary Keys", children: primaryKeys });
-
         const foreignKeys = [];
         for (const fk in tableData.foreign_keys) {
           foreignKeys.push({ text: `${fk} -> ${tableData.foreign_keys[fk]}`, icon: "jstree-file" });
@@ -536,7 +551,6 @@
       }
       return treeData;
     }
-
     async function loadSchema() {
       try {
         showSpinner();
@@ -596,12 +610,11 @@
     }
 
     /**
-     * Heurística para inferir el tipo de columna (number, date, string) a partir de la primera fila.
+     * Heurística para inferir el tipo de columna a partir de la primera fila.
      */
     function inferColumnTypes(data) {
       const columns = {};
       if (!data || data.length === 0) return columns;
-
       const firstRow = data[0];
       for (let colName in firstRow) {
         const value = firstRow[colName];
@@ -617,21 +630,22 @@
     }
 
     /**
-     * Llama al endpoint /suggest_chart para obtener el tipo de gráfico que el LLM recomiende,
-     * y luego renderiza el resultado con Chart.js
+     * Llama al endpoint /suggest_chart para obtener la recomendación del LLM
+     * y luego renderiza el gráfico con Chart.js.
+     * Muestra un spinner verde sobre el contenedor del gráfico mientras se procesa.
      */
     async function autoSuggestAndRenderChart(data) {
       if (!data || data.length === 0) {
         console.log("No hay datos para sugerir un gráfico.");
         return;
       }
-      // Construir objeto columns
       const columns = inferColumnTypes(data);
-      // Toma muestra de datos
       const sample = data.slice(0, 5);
+      
+      // Mostrar el spinner verde en el contenedor del gráfico
+      document.getElementById("chart-loading-spinner").style.display = "flex";
 
       try {
-        showSpinner();
         const response = await fetch("http://localhost:8000/suggest_chart", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -642,20 +656,17 @@
         }
         const suggestion = await response.json();
         console.log("Sugerencia de gráfico:", suggestion);
-
-        // Renderizar el gráfico con la sugerencia
         renderSuggestedChart(suggestion, data);
-
       } catch (error) {
         console.error("No se pudo obtener sugerencia de gráfico:", error);
       } finally {
-        hideSpinner();
+        // Ocultar el spinner verde
+        document.getElementById("chart-loading-spinner").style.display = "none";
       }
     }
 
     /**
-     * Toma la sugerencia del LLM (chart_type, x_axis, y_axis, etc.) y construye
-     * el gráfico en <canvas id="myChart">
+     * Toma la sugerencia del LLM y construye el gráfico en <canvas id="myChart">.
      */
     function renderSuggestedChart(suggestion, data) {
       const { chart_type, x_axis, y_axis, explanation } = suggestion;
@@ -663,19 +674,14 @@
         console.warn("No se definió correctamente x_axis o y_axis en la sugerencia.");
         return;
       }
-
-      // Prepara los valores para Chart.js
       const labels = data.map(item => item[x_axis]);
       const values = data.map(item => item[y_axis]);
-
-      // Mapeo sencillo a tipos de Chart.js
       let chartJsType = "bar";
       if (chart_type === "line") chartJsType = "line";
       else if (chart_type === "pie") chartJsType = "pie";
       else if (chart_type === "scatter") chartJsType = "scatter";
       else if (chart_type === "bar") chartJsType = "bar";
 
-      // Destruir la instancia previa si existe
       if (chartInstance) {
         chartInstance.destroy();
       }
