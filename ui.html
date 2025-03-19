@@ -4,11 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NLDataQueries</title>
+
   <!-- Bootstrap CSS -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <!-- Tabulator CSS -->
   <link href="https://unpkg.com/tabulator-tables/dist/css/tabulator.min.css" rel="stylesheet">
+
+  <!-- JSTree CSS -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css" />
+
+  <!-- Chart.js para renderizar gráficos -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
   <style>
     /* Estilos existentes */
     body {
@@ -54,6 +62,7 @@
       border: none;
       border-radius: 5px;
       cursor: pointer;
+      margin-bottom: 5px;
     }
     button:hover {
       background-color: #0056b3;
@@ -184,8 +193,10 @@
           <img src="/image/logo.jpg" alt="Logo" width="30" height="30" class="d-inline-block align-text-top">
           NLDataQueries
         </a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" 
-                aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse"
+                data-bs-target="#navbarSupportedContent" 
+                aria-controls="navbarSupportedContent" aria-expanded="false"
+                aria-label="Toggle navigation">
           <span class="navbar-toggler-icon"></span>
         </button>
         <!-- Menús desplegables a la derecha -->
@@ -193,7 +204,8 @@
           <ul class="navbar-nav mb-2 mb-lg-0">
             <!-- Menú Configurar -->
             <li class="nav-item dropdown">
-              <a class="nav-link dropdown-toggle" href="#" id="configDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <a class="nav-link dropdown-toggle" href="#" id="configDropdown" role="button"
+                 data-bs-toggle="dropdown" aria-expanded="false">
                 Configurar
               </a>
               <ul class="dropdown-menu" aria-labelledby="configDropdown">
@@ -202,7 +214,8 @@
             </li>
             <!-- Menú Ayuda -->
             <li class="nav-item dropdown">
-              <a class="nav-link dropdown-toggle" href="#" id="ayudaDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <a class="nav-link dropdown-toggle" href="#" id="ayudaDropdown" role="button"
+                 data-bs-toggle="dropdown" aria-expanded="false">
                 Ayuda
               </a>
               <ul class="dropdown-menu" aria-labelledby="ayudaDropdown">
@@ -228,16 +241,26 @@
       <h2>Consulta en Lenguaje Natural</h2>
       <textarea id="query-input" placeholder="Escribe tu consulta en lenguaje natural..."></textarea>
       <button onclick="sendQuery()">Ejecutar Consulta</button>
+
       <div id="sql-query"></div>
       <div id="table-container"></div>
+
+      <!-- Controles de paginación -->
       <div class="pagination-controls">
         <button onclick="prevPage()" id="prev-page" disabled>Página Anterior</button>
         <span id="page-info">&nbsp;1&nbsp;</span>
         <button onclick="nextPage()" id="next-page">Página Siguiente</button>
       </div>
+
       <div class="download-controls">
         <button id="download-csv" onclick="downloadCSV()" style="display:none;">Descargar CSV</button>
       </div>
+
+      <!-- Contenedor para el gráfico sugerido -->
+      <div id="chart-container" style="margin-top: 20px;">
+        <canvas id="myChart" width="600" height="300"></canvas>
+      </div>
+
     </div>
   </div>
 
@@ -259,7 +282,6 @@
     </div>
   </div>
   
-
   <!-- Loading Spinner -->
   <div id="loading-spinner">
     <div class="spinner"></div>
@@ -274,6 +296,7 @@
   <script type="text/javascript" src="https://unpkg.com/tabulator-tables/dist/js/tabulator.min.js"></script>
   <!-- Bootstrap Bundle JS -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
   <script>
     let currentPage = 1;
     let perPage = 5;
@@ -281,8 +304,12 @@
     let historyTable;
     let currentNaturalQuery = "";
     let currentSQLQuery = ""; // Aquí se almacenará la consulta base (sin LIMIT/OFFSET)
+    let currentData = [];     // Aquí guardamos la data resultante de la consulta
 
-    // Funciones para mostrar y ocultar el spinner
+    // Instancia global de Chart.js para poder destruirla al actualizar
+    let chartInstance = null;
+
+    // Funciones para mostrar/ocultar spinner
     function showSpinner() {
       document.getElementById("loading-spinner").style.display = "flex";
     }
@@ -334,74 +361,88 @@
       ]
     });
 
+    /**
+     * Envía la consulta en lenguaje natural al endpoint /query.
+     * Tras obtener los datos, setea la tabla y solicita una sugerencia de gráfico
+     * para mostrarlo automáticamente.
+     */
     async function sendQuery(page = 1, retries = 3) {
-        const queryInput = document.getElementById('query-input').value;
-        if (!queryInput.trim()) {
-            alert("Por favor, ingresa una consulta válida.");
-            return;
-        }
-        currentNaturalQuery = queryInput;
-        showSpinner(); // Se muestra el spinner una vez al iniciar
+      const queryInput = document.getElementById('query-input').value;
+      if (!queryInput.trim()) {
+        alert("Por favor, ingresa una consulta válida.");
+        return;
+      }
+      currentNaturalQuery = queryInput;
+      showSpinner(); // Spinner al iniciar
 
-        let success = false;
-        while (retries >= 0 && !success) {
-            try {
-            const response = await fetch(`http://localhost:8000/query?page=${page}&per_page=${perPage}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ natural_language_query: queryInput })
+      let success = false;
+      while (retries >= 0 && !success) {
+        try {
+          const response = await fetch(`http://localhost:8000/query?page=${page}&per_page=${perPage}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ natural_language_query: queryInput })
+          });
+          if (!response.ok) {
+            throw new Error("Error al procesar la consulta.");
+          }
+          const data = await response.json();
+          document.getElementById("sql-query").innerText = "Consulta SQL generada:\n" + data.sql_query;
+
+          // Guardamos la consulta base sin paginación
+          currentSQLQuery = data.sql_query.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?;?$/i, ";").trim();
+
+          // Actualizamos la tabla con los resultados
+          currentData = data.result;  // Almacenamos los datos en la variable global
+          if (!table) {
+            table = new Tabulator("#table-container", {
+              layout: "fitColumns",
+              pagination: false,
+              movableColumns: true,
+              resizableRows: true,
+              tooltips: true,
+              addRowPos: "top",
+              history: true,
+              clipboard: true,
+              downloadConfig: {
+                columnHeaders: true,
+                columnGroups: false,
+                rowGroups: false,
+                columnCalcs: false,
+                dataTree: false,
+              },
+              layout: "fitData",
+              autoColumns: true,
+              data: currentData
             });
-            if (!response.ok) {
-                throw new Error("Error al procesar la consulta.");
-            }
-            const data = await response.json();
-            document.getElementById("sql-query").innerText = "Consulta SQL generada:\n" + data.sql_query;
-            currentSQLQuery = data.sql_query.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?;?$/i, ";").trim();
-            if (!table) {
-                table = new Tabulator("#table-container", {
-                    layout: "fitColumns",
-                    pagination: false,
-                    movableColumns: true,
-                    resizableRows: true,
-                    tooltips: true,
-                    addRowPos: "top",
-                    history: true,
-                    clipboard: true,
-                    downloadConfig: {
-                        columnHeaders: true,
-                        columnGroups: false,
-                        rowGroups: false,
-                        columnCalcs: false,
-                        dataTree: false,
-                    },
-                    layout: "fitData",
-                    autoColumns: true,
-                    data: data.result
-                });
-            } else {
-                table.setData(data.result);
-            }
-            currentPage = page;
-            updatePaginationControls(data.result.length);
-            document.getElementById("download-csv").style.display = "block";
-            success = true;
-            } catch (error) {
-            if (retries > 0) {
-                showAlert("Error en la consulta. Reintentando...");
-                retries--;
-                // Puedes agregar un pequeño retardo antes de reintentar
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            } else {
-                alert(error.message);
-                break;
-            }
-            }
+          } else {
+            table.setData(currentData);
+          }
+
+          // Llamamos a la función que obtiene la sugerencia de gráfico y lo muestra
+          autoSuggestAndRenderChart(currentData);
+
+          currentPage = page;
+          updatePaginationControls(currentData.length);
+          document.getElementById("download-csv").style.display = "block";
+          success = true;
+
+        } catch (error) {
+          if (retries > 0) {
+            showAlert("Error en la consulta. Reintentando...");
+            retries--;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } else {
+            alert(error.message);
+            break;
+          }
+        } finally {
+          hideSpinner(); // Ocultamos spinner al terminar
         }
-        hideSpinner(); // Se oculta el spinner solo cuando se termina el proceso de reintentos
+      }
     }
 
-
-    // Nueva función para ejecutar la consulta base con paginación, usando el endpoint /execute_sql
+    // Ejecuta la consulta base con paginación usando /execute_sql
     async function executeQuery(page = currentPage) {
       currentPage = page;
       try {
@@ -420,20 +461,26 @@
         const data = await response.json();
         document.getElementById("query-input").value = currentNaturalQuery;
         document.getElementById("sql-query").innerText = "Consulta SQL ejecutada:\n" + data.sql_query;
+
+        currentData = data.result;
         if (!table) {
           table = new Tabulator("#table-container", {
             layout: "fitColumns",
             pagination: "local",
             paginationSize: perPage,
             autoColumns: true,
-            data: data.result
+            data: currentData
           });
         } else {
-          table.setData(data.result);
+          table.setData(currentData);
         }
         document.getElementById("download-csv").style.display = "block";
         currentPage = data.page;
-        updatePaginationControls(data.result.length);
+        updatePaginationControls(currentData.length);
+
+        // También podrías volver a llamar a autoSuggestAndRenderChart(currentData)
+        // si deseas refrescar el gráfico tras cambiar de página (opcional).
+
       } catch (error) {
         alert(error.message);
       } finally {
@@ -441,32 +488,31 @@
       }
     }
 
-    // Los botones de paginación usan la función executeQuery para reutilizar la consulta base
+    // Controles de paginación
     function prevPage() {
       if (currentPage > 1) {
         executeQuery(currentPage - 1);
       }
     }
-
     function nextPage() {
       executeQuery(currentPage + 1);
     }
-
     function updatePaginationControls(currentResultCount) {
       document.getElementById("page-info").innerText = ` ${currentPage} `;
       document.getElementById("prev-page").disabled = currentPage === 1;
       document.getElementById("next-page").disabled = currentResultCount < perPage;
     }
 
+    // Modal en historial
     function showModal(natural, sql) {
       document.getElementById("modal-content").innerHTML = `<strong>Consulta:</strong><br>${natural}<br><br><strong>SQL:</strong><br>${sql}`;
       document.getElementById("overlay").style.display = "flex";
     }
-
     function closeModal() {
       document.getElementById("overlay").style.display = "none";
     }
 
+    // Carga dinámica del esquema
     function transformSchemaToTreeData(schema) {
       const treeData = [];
       for (const table in schema) {
@@ -477,8 +523,10 @@
           columns.push({ text: `${col}: ${tableData.columns[col]}`, icon: "jstree-file" });
         }
         children.push({ text: "Columns", children: columns });
+
         const primaryKeys = tableData.primary_keys.map(pk => ({ text: pk, icon: "jstree-file" }));
         children.push({ text: "Primary Keys", children: primaryKeys });
+
         const foreignKeys = [];
         for (const fk in tableData.foreign_keys) {
           foreignKeys.push({ text: `${fk} -> ${tableData.foreign_keys[fk]}`, icon: "jstree-file" });
@@ -512,70 +560,149 @@
       }
     }
 
+    // Descarga CSV
     function downloadCSV() {
-        showSpinner();
-        fetch("http://localhost:8000/download_csv", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-            natural_language_query: currentNaturalQuery,
-            sql_query: currentSQLQuery
-            })
+      showSpinner();
+      fetch("http://localhost:8000/download_csv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          natural_language_query: currentNaturalQuery,
+          sql_query: currentSQLQuery
         })
-        .then(response => {
-            if (!response.ok) {
-            throw new Error("Error al descargar CSV");
-            }
-            return response.blob();
-        })
-        .then(blob => {
-            hideSpinner();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "results.csv";
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.URL.revokeObjectURL(url);
-            document.getElementById("download-csv").style.display = "none";
-        })
-        .catch(error => {
-            hideSpinner();
-            alert(error.message);
-        });
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error("Error al descargar CSV");
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        hideSpinner();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "results.csv";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        document.getElementById("download-csv").style.display = "none";
+      })
+      .catch(error => {
+        hideSpinner();
+        alert(error.message);
+      });
     }
 
-    async function getChartSuggestion() {
-        // Suponiendo que ya tienes 'currentData' con la info de la tabla
-        // 1. Construye el diccionario de columnas y tipos (p.e. "fecha": "date", "ventas": "int", etc.)
-        // 2. Toma una pequeña muestra de filas de currentData
+    /**
+     * Heurística para inferir el tipo de columna (number, date, string) a partir de la primera fila.
+     */
+    function inferColumnTypes(data) {
+      const columns = {};
+      if (!data || data.length === 0) return columns;
 
-        const sample = currentData.slice(0, 5); // 5 filas de ejemplo
-        const columns = {}; // De algún lugar podrías inferir tipos
+      const firstRow = data[0];
+      for (let colName in firstRow) {
+        const value = firstRow[colName];
+        if (typeof value === "number") {
+          columns[colName] = "number";
+        } else if (!isNaN(Date.parse(value))) {
+          columns[colName] = "date";
+        } else {
+          columns[colName] = "string";
+        }
+      }
+      return columns;
+    }
 
-        // Si quieres, infieres el tipo "heurísticamente":
-        // columns[colName] = typeof row[colName] => "number", "string", etc.
-        // O, si lo conoces de antemano, lo rellenas manualmente.
+    /**
+     * Llama al endpoint /suggest_chart para obtener el tipo de gráfico que el LLM recomiende,
+     * y luego renderiza el resultado con Chart.js
+     */
+    async function autoSuggestAndRenderChart(data) {
+      if (!data || data.length === 0) {
+        console.log("No hay datos para sugerir un gráfico.");
+        return;
+      }
+      // Construir objeto columns
+      const columns = inferColumnTypes(data);
+      // Toma muestra de datos
+      const sample = data.slice(0, 5);
 
-        // Llamada al endpoint:
+      try {
+        showSpinner();
         const response = await fetch("http://localhost:8000/suggest_chart", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ columns: columns, data_sample: sample })
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ columns: columns, data_sample: sample })
         });
         if (!response.ok) {
-            throw new Error("Error al obtener sugerencia de gráfico");
+          throw new Error("Error al obtener sugerencia de gráfico");
         }
-        const data = await response.json();
-        console.log("Sugerencia de gráfico:", data);
-        // data.chart_type, data.x_axis, data.y_axis, data.group_by, data.explanation
-        // A partir de ahí, generas el gráfico con Chart.js o la librería que desees
+        const suggestion = await response.json();
+        console.log("Sugerencia de gráfico:", suggestion);
+
+        // Renderizar el gráfico con la sugerencia
+        renderSuggestedChart(suggestion, data);
+
+      } catch (error) {
+        console.error("No se pudo obtener sugerencia de gráfico:", error);
+      } finally {
+        hideSpinner();
+      }
     }
 
+    /**
+     * Toma la sugerencia del LLM (chart_type, x_axis, y_axis, etc.) y construye
+     * el gráfico en <canvas id="myChart">
+     */
+    function renderSuggestedChart(suggestion, data) {
+      const { chart_type, x_axis, y_axis, explanation } = suggestion;
+      if (!x_axis || !y_axis) {
+        console.warn("No se definió correctamente x_axis o y_axis en la sugerencia.");
+        return;
+      }
 
+      // Prepara los valores para Chart.js
+      const labels = data.map(item => item[x_axis]);
+      const values = data.map(item => item[y_axis]);
 
-    // Inicializa la carga de historial y esquema
+      // Mapeo sencillo a tipos de Chart.js
+      let chartJsType = "bar";
+      if (chart_type === "line") chartJsType = "line";
+      else if (chart_type === "pie") chartJsType = "pie";
+      else if (chart_type === "scatter") chartJsType = "scatter";
+      else if (chart_type === "bar") chartJsType = "bar";
+
+      // Destruir la instancia previa si existe
+      if (chartInstance) {
+        chartInstance.destroy();
+      }
+
+      const ctx = document.getElementById("myChart").getContext("2d");
+      chartInstance = new Chart(ctx, {
+        type: chartJsType,
+        data: {
+          labels: labels,
+          datasets: [{
+            label: `${y_axis} vs. ${x_axis}`,
+            data: values
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: {
+              display: true,
+              text: explanation || "Gráfico sugerido"
+            }
+          }
+        }
+      });
+    }
+
+    // Cargar historial y esquema al iniciar
     loadHistory();
     loadSchema();
   </script>
