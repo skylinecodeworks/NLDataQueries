@@ -1,213 +1,412 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NLDataQueries</title>
-    <link href="https://unpkg.com/tabulator-tables/dist/css/tabulator.min.css" rel="stylesheet">
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            display: flex;
-            height: 100vh;
-            background-color: #f8f9fa;
-        }
-        .sidebar {
-            width: 300px;
-            background: white;
-            padding: 10px;
-            box-shadow: 2px 0px 5px rgba(0, 0, 0, 0.1);
-            overflow-y: auto;
-        }
-        .main-content {
-            flex-grow: 1;
-            padding: 20px;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
-            position: relative;
-            margin: 20px;
-        }
-        textarea {
-            width: 100%;
-            height: 80px;
-            margin-bottom: 10px;
-        }
-        button {
-            display: block;
-            width: 100%;
-            padding: 10px;
-            background-color: #007bff;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-        button:hover {
-            background-color: #0056b3;
-        }
-        #sql-query {
-            background: #f0f0f0;
-            padding: 10px;
-            border-radius: 5px;
-            font-family: monospace;
-            white-space: pre-wrap;
-            margin-top: 10px;
-        }
-        #table-container {
-            margin-top: 20px;
-        }
-        .pagination-controls {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 10px;
-        }
-        .spinner {
-            display: none;
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 50px;
-            height: 50px;
-            border: 5px solid rgba(0, 0, 0, 0.1);
-            border-top: 5px solid #007bff;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: translate(-50%, -50%) rotate(0deg); }
-            100% { transform: translate(-50%, -50%) rotate(360deg); }
-        }
-        h3 {
-            margin-top: 0;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NLDataQueries</title>
+  <link href="https://unpkg.com/tabulator-tables/dist/css/tabulator.min.css" rel="stylesheet">
+  <!-- jsTree CSS sin integrity -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css" />
+  <style>
+    /* Estilos existentes... */
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background-color: #f8f9fa;
+    }
+    .content-wrapper {
+      display: flex;
+      flex-grow: 1;
+      overflow: hidden;
+    }
+    .sidebar {
+      width: 300px;
+      background: white;
+      padding: 10px;
+      box-shadow: 2px 0px 5px rgba(0, 0, 0, 0.1);
+      overflow-y: auto;
+    }
+    .main-content {
+      flex-grow: 1;
+      padding: 20px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+      margin: 20px;
+      overflow-y: auto;
+    }
+    textarea {
+      width: 100%;
+      height: 80px;
+      margin-bottom: 10px;
+    }
+    button {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #0056b3;
+    }
+    #sql-query {
+      background: #f0f0f0;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      white-space: pre-wrap;
+      margin-top: 10px;
+    }
+    #table-container {
+      margin-top: 20px;
+    }
+    .pagination-controls {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 10px;
+    }
+    .overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+    .modal {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      width: 50%;
+      box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.2);
+    }
+    .modal-content {
+      white-space: pre-wrap;
+      font-family: monospace;
+    }
+    .modal-buttons {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 10px;
+    }
+    .close-btn, .execute-btn {
+      padding: 10px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .close-btn {
+      background-color: red;
+      color: white;
+    }
+    .close-btn:hover {
+      background-color: darkred;
+    }
+    .execute-btn {
+      background-color: green;
+      color: white;
+    }
+    .execute-btn:hover {
+      background-color: darkgreen;
+    }
+    /* Footer para visualizar el esquema */
+    footer {
+      background-color: #fff;
+      border-top: 1px solid #ccc;
+      padding: 10px;
+      overflow: auto;
+    }
+    #schema-tree {
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    /* Estilos para el loading spinner */
+    #loading-spinner {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(0, 0, 0, 0.3);
+      justify-content: center;
+      align-items: center;
+      z-index: 1100;
+    }
+    .spinner {
+      border: 12px solid #f3f3f3;
+      border-top: 12px solid #3498db;
+      border-radius: 50%;
+      width: 80px;
+      height: 80px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
 </head>
 <body>
+  <div class="content-wrapper">
     <!-- Sidebar del historial -->
     <div class="sidebar">
-        <h3>Historial</h3>
-        <div id="history-container"></div>
+      <h3>Historial</h3>
+      <div id="history-container"></div>
     </div>
 
     <!-- Contenido principal -->
     <div class="main-content">
-        <h2>Consulta en Lenguaje Natural</h2>
-        <textarea id="query-input" placeholder="Escribe tu consulta en lenguaje natural..."></textarea>
-        <button onclick="sendQuery()">Ejecutar Consulta</button>
-        <div id="sql-query"></div>
-        <div id="table-container"></div>
-        <div class="pagination-controls">
-            <button onclick="prevPage()" id="prev-page" disabled>Página Anterior</button>
-            <span id="page-info">Página 1</span>
-            <button onclick="nextPage()" id="next-page">Página Siguiente</button>
-        </div>
-        <div class="spinner" id="loading-spinner"></div>
+      <h2>Consulta en Lenguaje Natural</h2>
+      <textarea id="query-input" placeholder="Escribe tu consulta en lenguaje natural..."></textarea>
+      <button onclick="sendQuery()">Ejecutar Consulta</button>
+      <div id="sql-query"></div>
+      <div id="table-container"></div>
+      <div class="pagination-controls">
+        <button onclick="prevPage()" id="prev-page" disabled>Página Anterior</button>
+        <span id="page-info">Página 1</span>
+        <button onclick="nextPage()" id="next-page">Página Siguiente</button>
+      </div>
     </div>
-    
-    <script type="text/javascript" src="https://unpkg.com/tabulator-tables/dist/js/tabulator.min.js"></script>
-    <script>
-        let currentPage = 1;
-        let perPage = 5;
-        let totalRows = 0;
-        let table;
-        let historyTable;
+  </div>
 
-        // Cargar historial de consultas
-        async function loadHistory() {
-            try {
-                const response = await fetch(`http://localhost:8000/history?page=1&per_page=20`);
-                if (!response.ok) throw new Error("Error al obtener el historial.");
+  <!-- Footer para visualizar el esquema de la base de datos -->
+  <footer>
+    <h4>Esquema de la Base de Datos</h4>
+    <div id="schema-tree"></div>
+  </footer>
 
-                const data = await response.json();
-                historyTable.setData(data.results);
-            } catch (error) {
-                console.error(error.message);
-            }
+  <!-- Overlay para mostrar detalles del historial -->
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <h3>Detalle de Consulta</h3>
+      <div class="modal-content" id="modal-content"></div>
+      <div class="modal-buttons">
+        <button class="execute-btn" onclick="executeQuery()">Ejecutar</button>
+        <button class="close-btn" onclick="closeModal()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Spinner -->
+  <div id="loading-spinner">
+    <div class="spinner"></div>
+  </div>
+
+  <!-- Carga de scripts sin integrity -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/jstree.min.js"></script>
+  <script type="text/javascript" src="https://unpkg.com/tabulator-tables/dist/js/tabulator.min.js"></script>
+  <script>
+    let currentPage = 1;
+    let perPage = 5;
+    let table;
+    let historyTable;
+    let currentNaturalQuery = "";
+    let currentSQLQuery = "";
+
+    // Funciones para mostrar y ocultar el spinner
+    function showSpinner() {
+      document.getElementById("loading-spinner").style.display = "flex";
+    }
+    function hideSpinner() {
+      document.getElementById("loading-spinner").style.display = "none";
+    }
+
+    async function loadHistory() {
+      try {
+        showSpinner();
+        const response = await fetch(`http://localhost:8000/history?page=1&per_page=20`);
+        if (!response.ok) throw new Error("Error al obtener el historial.");
+        const data = await response.json();
+        historyTable.setData(data.results);
+      } catch (error) {
+        console.error(error.message);
+      } finally {
+        hideSpinner();
+      }
+    }
+
+    historyTable = new Tabulator("#history-container", {
+      layout: "fitDataFill",
+      height: "80vh",
+      columns: [
+        { title: "Consulta", field: "natural", widthGrow: 1 },
+        { title: "SQL", field: "sql", widthGrow: 1 }
+      ],
+      rowContextMenu: [
+        {
+          label: "Ver detalles",
+          action: function(e, row) {
+            let data = row.getData();
+            currentNaturalQuery = data.natural;
+            currentSQLQuery = data.sql;
+            showModal(currentNaturalQuery, currentSQLQuery);
+          }
         }
+      ]
+    });
 
-        // Configurar tabla de historial
-        historyTable = new Tabulator("#history-container", {
-            layout: "fitColumns",
-            height: "80vh",
-            columns: [
-                { title: "Consulta", field: "natural", formatter: "textarea", widthGrow: 2 },
-            ],
-            rowClick: function(e, row) {
-                document.getElementById('query-input').value = row.getData().natural;
-                sendQuery();
-            }
+    async function sendQuery(page = 1) {
+      const queryInput = document.getElementById('query-input').value;
+      if (!queryInput.trim()) {
+        alert("Por favor, ingresa una consulta válida.");
+        return;
+      }
+      try {
+        showSpinner();
+        const response = await fetch(`http://localhost:8000/query?page=${page}&per_page=${perPage}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ natural_language_query: queryInput })
         });
-
-        // Cargar historial al iniciar
-        loadHistory();
-
-        async function sendQuery() {
-            const queryInput = document.getElementById('query-input').value;
-            if (!queryInput.trim()) {
-                alert("Por favor, ingresa una consulta válida.");
-                return;
-            }
-            
-            document.getElementById('loading-spinner').style.display = 'block';
-            
-            try {
-                const response = await fetch(`http://localhost:8000/query?page=${currentPage}&per_page=${perPage}`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ natural_language_query: queryInput })
-                });
-                
-                if (!response.ok) {
-                    throw new Error("Error al procesar la consulta.");
-                }
-                
-                const data = await response.json();
-                totalRows = data.total_rows;
-                
-                document.getElementById('sql-query').innerText = "Consulta SQL generada:\n" + data.sql_query;
-                
-                if (!table) {
-                    table = new Tabulator("#table-container", {
-                        layout: "fitColumns",
-                        pagination: "local",
-                        paginationSize: perPage,
-                        autoColumns: true,
-                        data: data.result
-                    });
-                } else {
-                    table.setData(data.result);
-                }
-                
-                document.getElementById('page-info').innerText = `Página ${data.page}`;
-                document.getElementById('prev-page').disabled = currentPage === 1;
-                document.getElementById('next-page').disabled = (currentPage * perPage) >= totalRows;
-
-                // Recargar historial después de ejecutar consulta
-                loadHistory();
-
-            } catch (error) {
-                alert(error.message);
-            } finally {
-                document.getElementById('loading-spinner').style.display = 'none';
-            }
+        if (!response.ok) {
+          throw new Error("Error al procesar la consulta.");
         }
-        
-        function nextPage() {
-            if ((currentPage * perPage) < totalRows) {
-                currentPage++;
-                sendQuery();
-            }
+        const data = await response.json();
+        document.getElementById("sql-query").innerText = "Consulta SQL generada:\n" + data.sql_query;
+        if (!table) {
+          table = new Tabulator("#table-container", {
+            layout: "fitColumns",
+            pagination: "local",
+            paginationSize: perPage,
+            autoColumns: true,
+            data: data.result
+          });
+        } else {
+          table.setData(data.result);
         }
-        
-        function prevPage() {
-            if (currentPage > 1) {
-                currentPage--;
-                sendQuery();
-            }
+        currentPage = page;
+        updatePaginationControls(data.result.length);
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        hideSpinner();
+      }
+    }
+
+    function prevPage() {
+      if (currentPage > 1) {
+        sendQuery(currentPage - 1);
+      }
+    }
+
+    function nextPage() {
+      sendQuery(currentPage + 1);
+    }
+
+    function updatePaginationControls(currentResultCount) {
+      document.getElementById("page-info").innerText = `Página ${currentPage}`;
+      document.getElementById("prev-page").disabled = currentPage === 1;
+      document.getElementById("next-page").disabled = currentResultCount < perPage;
+    }
+
+    function showModal(natural, sql) {
+      document.getElementById("modal-content").innerHTML = `<strong>Consulta:</strong><br>${natural}<br><br><strong>SQL:</strong><br>${sql}`;
+      document.getElementById("overlay").style.display = "flex";
+    }
+
+    function closeModal() {
+      document.getElementById("overlay").style.display = "none";
+    }
+
+    async function executeQuery() {
+      try {
+        showSpinner();
+        const response = await fetch(`http://localhost:8000/execute_sql?page=${currentPage}&per_page=${perPage}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            natural_language_query: currentNaturalQuery,
+            sql_query: currentSQLQuery
+          })
+        });
+        if (!response.ok) {
+          throw new Error("Error al ejecutar la consulta SQL.");
         }
-    </script>
+        const data = await response.json();
+        document.getElementById("sql-query").innerText = "Consulta SQL ejecutada:\n" + data.sql_query;
+        if (!table) {
+          table = new Tabulator("#table-container", {
+            layout: "fitColumns",
+            pagination: "local",
+            paginationSize: perPage,
+            autoColumns: true,
+            data: data.result
+          });
+        } else {
+          table.setData(data.result);
+        }
+        currentPage = data.page;
+        updatePaginationControls(data.result.length);
+        closeModal();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        hideSpinner();
+      }
+    }
+
+    function transformSchemaToTreeData(schema) {
+      const treeData = [];
+      for (const table in schema) {
+        const tableData = schema[table];
+        const children = [];
+        const columns = [];
+        for (const col in tableData.columns) {
+          columns.push({ text: `${col}: ${tableData.columns[col]}`, icon: "jstree-file" });
+        }
+        children.push({ text: "Columns", children: columns });
+        const primaryKeys = tableData.primary_keys.map(pk => ({ text: pk, icon: "jstree-file" }));
+        children.push({ text: "Primary Keys", children: primaryKeys });
+        const foreignKeys = [];
+        for (const fk in tableData.foreign_keys) {
+          foreignKeys.push({ text: `${fk} -> ${tableData.foreign_keys[fk]}`, icon: "jstree-file" });
+        }
+        children.push({ text: "Foreign Keys", children: foreignKeys });
+        treeData.push({ text: table, children: children });
+      }
+      return treeData;
+    }
+
+    async function loadSchema() {
+      try {
+        showSpinner();
+        const response = await fetch("http://localhost:8000/schema");
+        if (!response.ok) {
+          throw new Error("Error al cargar el esquema.");
+        }
+        const schema = await response.json();
+        const treeData = transformSchemaToTreeData(schema);
+        $("#schema-tree").jstree({
+          core: {
+            data: treeData,
+            themes: { variant: "large" }
+          }
+        });
+      } catch (error) {
+        console.error(error.message);
+        document.getElementById("schema-tree").innerText = "No se pudo cargar el esquema.";
+      } finally {
+        hideSpinner();
+      }
+    }
+
+    // Inicializa la carga de historial y esquema
+    loadHistory();
+    loadSchema();
+  </script>
 </body>
 </html>

@@ -264,7 +264,13 @@ async def execute_sql_query(
 
     return QueryResponse(sql_query=sql_query, result=result, total_rows=total_rows, page=page, per_page=per_page)
 
-
+@app.get("/schema")
+async def get_schema():
+    """
+    Devuelve el modelo de datos (esquema de la base de datos) obtenido a través de la función get_db_schema.
+    """
+    schema = get_db_schema()
+    return schema
 
 @app.get("/")
 async def serve_ui():
