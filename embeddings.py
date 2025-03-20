@@ -7,17 +7,19 @@ import pypdf
 from sentence_transformers import SentenceTransformer
 import numpy as np
 from dotenv import load_dotenv
+import uuid
 
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
-weaviate_url = os.getenv("WEAVIATE_URL", "http://localhost:8080")
+weaviate_url = os.getenv("WEAVIATE_URL", "http://localhost:8080/v1")
 pdf_path = os.getenv("POSTGRES_MANUAL_PDF", "docs/postgres_manual.pdf")
 chunk_size = int(os.getenv("CHUNK_SIZE", 1000))
 chunk_overlap = int(os.getenv("CHUNK_OVERLAP", 200))
 similarity_threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.5))
 embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 embedding_class_name = os.getenv("EMBEDDING_CLASS", "PostgresManualChunk")
+
 
 def stream_chunks_from_pdf(pdf_path, chunk_size=1000, overlap=200):
     """
@@ -58,6 +60,7 @@ def create_weaviate_schema(client):
 
 
 def clear_weaviate_class(client, class_name=embedding_class_name):
+    print(f"Reseting Collection {embedding_class_name}.")
     client.collections.delete(embedding_class_name)
     # Note: you can also delete all collections in the Weaviate instance with:
     # client.collections.delete_all()
@@ -84,14 +87,12 @@ def process_and_upload_chunk(chunk, idx, client, model, ref_embedding, threshold
     if sim >= threshold:
         # Crear el objeto de datos y subir a Weaviate
         data_object = {
-            "chunk_id": f"chunk_{idx}",
+            "chunk_id": str(uuid.uuid4()),
             "text": chunk
         }
-        client.data.create(
-            class_name=embedding_class_name,
-            properties=data_object,
-            vector=chunk_embedding
-        )
+
+        knowledge_base.data.insert(data_object)
+
         print(f"Chunk {idx} uploaded (similarity: {sim:.2f}).")
     else:
         print(f"Chunk {idx} discarded due to low relevance (similarity: {sim:.2f}).")
@@ -118,6 +119,9 @@ def main():
         )
 
         client.connect()
+
+        global knowledge_base
+        knowledge_base = client.collections.get(embedding_class_name)
         
         # Borrar el contenido actual de la clase para asegurar un estado limpio
         clear_weaviate_class(client, class_name=embedding_class_name)
