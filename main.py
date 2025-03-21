@@ -1,9 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
-from sqlalchemy import create_engine, MetaData, Table, inspect, text
-from sqlalchemy.exc import SQLAlchemyError
 import uvicorn
-from dotenv import load_dotenv
 import os
 import subprocess
 import asyncio
@@ -11,14 +6,25 @@ import psycopg2
 import re
 import json
 import subprocess
+import weaviate
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import create_engine, MetaData, Table, inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
+from weaviate.connect import ConnectionParams
+from dotenv import load_dotenv
+
+
 
 # Cargar variables de entorno desde el fichero .env
 load_dotenv()
+
+WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://localhost:8080/v1")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SCHEMA = os.getenv("SCHEMA", "public")
 
@@ -43,7 +49,6 @@ app.add_middleware(
     allow_headers=["*"],  # Permite todos los headers
 )
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 
 class HistoryResponse(BaseModel):
     total_rows: int
@@ -72,6 +77,63 @@ class ChartSuggestionResponse(BaseModel):
 
 # Variable global para almacenar el esquema actualizado
 current_schema = {}
+
+def get_weaviate_client():
+    client = weaviate.WeaviateClient(
+        connection_params=ConnectionParams.from_params(
+            http_host="localhost",
+            http_port="8080",
+            http_secure=False,
+            grpc_host="localhost",
+            grpc_port="50051",
+            grpc_secure=False,
+        )
+    )
+    client.connect()
+    return client
+
+import weaviate
+
+def get_weaviate_client():
+
+    client = weaviate.WeaviateClient(
+        connection_params=weaviate.ConnectionParams.from_params(
+            http_host="localhost",
+            http_port="8080",
+            http_secure=False,
+            grpc_host="localhost",
+            grpc_port="50051",
+            grpc_secure=False,
+        )
+    )
+    client.connect()
+    return client
+
+def retrieve_context_from_weaviate(query: str, limit: int = 3) -> str:
+    client = get_weaviate_client()
+    collection = client.collections.use("PostgresManualChunk")
+
+    response = collection.query.near_text(
+        query=query,
+        limit=limit,
+        distance=0.7
+    )
+
+    objects = response.objects
+    if not objects:
+        return ""
+    
+    chunks = []
+    for obj in objects:
+        chunk_id = obj.properties.get("chunk_id", "")
+        text = obj.properties.get("text", "")
+        if text:
+            chunks.append(f"(Chunk ID: {chunk_id}) {text}")
+
+    return "\n\n".join(chunks)
+
+
+
 
 def get_db_schema() -> dict:
     """
@@ -144,6 +206,9 @@ def modify_pagination(sql_query: str, per_page: int, offset: int) -> str:
     return f"{base_sql} LIMIT {per_page} OFFSET {offset};"
 
 def local_llm_generate(natural_language_query: str, schema_info: dict, examples: list) -> str:
+
+    weaviate_context = retrieve_context_from_weaviate(natural_language_query, limit=3)
+
     """
     Usa Ollama (Mistral) para generar una consulta SQL válida basada en el esquema real de la base de datos.
     NOTA: Se espera que la consulta generada no incluya cláusulas de paginación, ya que estas se añadirán posteriormente.
@@ -152,6 +217,9 @@ def local_llm_generate(natural_language_query: str, schema_info: dict, examples:
         "Genera una consulta SQL basada en el siguiente esquema de base de datos. "
         "Asegúrate de que la consulta use exclusivamente las tablas y columnas listadas a continuación. "
         "Incluye siempre la cláusula ORDER BY para una paginación efectiva.\n"
+        "A continuación tienes extractos relevantes del manual de Postgres y el esquema de la base de datos.\n\n"
+        "### Extractos relevantes del manual:\n"
+        f"{weaviate_context}\n\n"
     )
     
     # Agregar información del esquema al prompt
