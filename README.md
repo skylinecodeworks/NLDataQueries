@@ -32,8 +32,6 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 ### Clone the repository and set up environment
-
-```bash
 git clone https://github.com/skylinecodeworks/NLDataQueries.git
 cd NLDataQueries
 
