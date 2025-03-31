@@ -1,0 +1,13 @@
+.
+├── aider_set.sh
+├── bundle.sh
+├── embeddings.py
+├── main.py
+├── pyproject.toml
+├── README.md
+├── requirements.txt
+├── structure.txt
+├── ui.html
+└── uv.lock
+
+1 directory, 10 files

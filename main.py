@@ -3,6 +3,7 @@ import os
 import subprocess
 import asyncio
 import psycopg2
+import requests
 import re
 import json
 import subprocess
@@ -21,15 +22,13 @@ from dotenv import load_dotenv
 
 
 
-# Cargar variables de entorno desde el fichero .env
 load_dotenv()
 
 WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://localhost:8080/v1")
 DATABASE_URL = os.getenv("DATABASE_URL")
-SCHEMA = os.getenv("SCHEMA", "public")
+SCHEMA = os.getenv("SCHEMA")
 
-# Crear la conexión a la base de datos y la instancia de MetaData
-engine = create_engine(DATABASE_URL)
+engine = create_engine(f"{DATABASE_URL}?options=-csearch_path={SCHEMA}")
 metadata = MetaData()
 
 better_prompt = (
@@ -43,10 +42,10 @@ better_prompt = (
 app = FastAPI(title="NLDataQueries: Consulta en Lenguaje Natural a SQL")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite cualquier origen, restringe esto en producción
+    allow_origins=["*"],  
     allow_credentials=True,
-    allow_methods=["*"],  # Permite todos los métodos HTTP
-    allow_headers=["*"],  # Permite todos los headers
+    allow_methods=["*"],  
+    allow_headers=["*"],  
 )
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -63,9 +62,7 @@ class ExecuteSQLRequest(BaseModel):
 
 
 class ChartSuggestionRequest(BaseModel):
-    # columns: dict => { "colName": "colType", ... }
     columns: Dict[str, str]
-    # data_sample: lista de filas, cada fila es un dict con {columna: valor}
     data_sample: List[Dict[str, Any]]
 
 class ChartSuggestionResponse(BaseModel):
@@ -75,7 +72,6 @@ class ChartSuggestionResponse(BaseModel):
     group_by: Optional[str] = None
     explanation: Optional[str] = None
 
-# Variable global para almacenar el esquema actualizado
 current_schema = {}
 
 def get_weaviate_client():
@@ -163,7 +159,7 @@ async def listen_for_schema_changes():
     """
     global current_schema
     conn = psycopg2.connect(DATABASE_URL)
-    conn.set_isolation_level(0)  # Permitir escuchar eventos
+    conn.set_isolation_level(0)  
     cursor = conn.cursor()
     cursor.execute("LISTEN schema_update;")
     print("Escuchando cambios en el esquema de la base de datos...")
@@ -201,18 +197,21 @@ def modify_pagination(sql_query: str, per_page: int, offset: int) -> str:
     """
     Remueve cualquier cláusula LIMIT/OFFSET existente y agrega la paginación deseada.
     """
-    # Se remueve cualquier LIMIT/OFFSET ya existente (sin distinguir entre mayúsculas/minúsculas)
     base_sql = re.sub(r"\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?", "", sql_query, flags=re.IGNORECASE).strip().rstrip(";")
     return f"{base_sql} LIMIT {per_page} OFFSET {offset};"
 
 def local_llm_generate(natural_language_query: str, schema_info: dict, examples: list) -> str:
+    """
+    Genera una consulta SQL válida basada en el esquema real de la base de datos
+    utilizando el modelo LM-Studio en lugar de Ollama.
 
+    :param natural_language_query: Consulta en lenguaje natural proporcionada por el usuario.
+    :param schema_info: Información del esquema de la base de datos.
+    :param examples: Ejemplos para proporcionar contexto y mejorar la precisión del modelo.
+    :return: Una consulta SQL generada como una cadena.
+    """
     weaviate_context = retrieve_context_from_weaviate(natural_language_query, limit=3)
 
-    """
-    Usa Ollama (Mistral) para generar una consulta SQL válida basada en el esquema real de la base de datos.
-    NOTA: Se espera que la consulta generada no incluya cláusulas de paginación, ya que estas se añadirán posteriormente.
-    """
     prompt = (
         "Genera una consulta SQL basada en el siguiente esquema de base de datos. "
         "Asegúrate de que la consulta use exclusivamente las tablas y columnas listadas a continuación. "
@@ -221,43 +220,46 @@ def local_llm_generate(natural_language_query: str, schema_info: dict, examples:
         "### Extractos relevantes del manual:\n"
         f"{weaviate_context}\n\n"
     )
-    
-    # Agregar información del esquema al prompt
+
     prompt += "### Esquema de la base de datos:\n"
     for table, details in schema_info.items():
         columns_info = ", ".join([f"{col} ({dtype})" for col, dtype in details["columns"].items()])
         prompt += f"- Tabla: {table} (Columnas: {columns_info})\n"
 
-    # Incluir ejemplos previos para mejorar la precisión del modelo
     prompt += "\n### Ejemplos de consultas SQL válidas:\n"
     for ex in examples:
         prompt += f"- {ex}\n"
-    
+
     prompt += f"\n### Consulta en lenguaje natural:\n{natural_language_query}\n"
-    prompt += "\n### Responde únicamente con la consulta SQL correspondiente (sin explicaciones ni comentarios)." + better_prompt
+    prompt += "### Responde únicamente con la consulta SQL correspondiente (sin explicaciones ni comentarios)." + better_prompt
 
     try:
-        result = subprocess.run(
-            ["ollama", "run", "mistral:latest"],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        sql_output = result.stdout.strip()
+        url = "http://localhost:1234/api/v0/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "model": "qwen2.5-coder-3b-instruct",  
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "max_tokens": -1,
+            "stream": False
+        }
 
-        # Se limpia el formato en caso de venir entre bloques de código
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        response_data = response.json()
+
+        sql_output = response_data['choices'][0]['message']['content']
+
         sql_output = re.sub(r"```(sql)?", "", sql_output, flags=re.IGNORECASE).strip()
-        
-        # Se asume que la consulta generada es válida si contiene SELECT y alguna tabla del esquema
+
         if any(table in sql_output for table in schema_info.keys()) and "SELECT" in sql_output.upper():
-            # Se devuelve la consulta base (sin paginación) terminada en punto y coma.
-            return sql_output.split(";")[0] + ";"
+            return sql_output.split(";")[0] + ";"  
         else:
             return "ERROR: La consulta generada no coincide con el esquema de la base de datos."
 
-    except subprocess.CalledProcessError as e:
-        return f"ERROR: Fallo al invocar el LLM: {e.stderr}"
+    except requests.exceptions.RequestException as e:
+        return f"ERROR: Fallo al invocar el LLM: {str(e)}"
+
 
 @app.post("/query", response_model=QueryResponse)
 async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per_page: int = Query(10, ge=1, le=100)):
@@ -266,13 +268,11 @@ async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per
     """
     examples = ["SELECT * FROM users WHERE created_at >= NOW() - INTERVAL '30 days';"]
     offset = (page - 1) * per_page
-    # Genera la consulta base sin paginación
     base_sql_query = local_llm_generate(query_req.natural_language_query, current_schema, examples)
 
     if not any(table in base_sql_query for table in current_schema.keys()):
         raise HTTPException(status_code=400, detail="La consulta generada no hace referencia a tablas válidas en el esquema.")
 
-    # Aplica la paginación al SQL base
     sql_query = modify_pagination(base_sql_query, per_page, offset)
 
     try:
@@ -281,13 +281,12 @@ async def process_query(query_req: QueryRequest, page: int = Query(1, ge=1), per
             result = [dict(row._mapping) for row in result_proxy]
             total_rows = len(result)
 
-            # Inserta en llm_sql_history
             insert_query = text("""
                 INSERT INTO llm_sql_history (sql, status, "natural") 
                 VALUES (:sql_query, :status, :natural_query)
             """)
             conn.execute(insert_query, {
-                "sql_query": base_sql_query,  # Se almacena la consulta sin paginación
+                "sql_query": base_sql_query,  
                 "status": True,
                 "natural_query": query_req.natural_language_query
             })
@@ -337,7 +336,6 @@ async def execute_sql_query(
     offset = (page - 1) * per_page
     base_sql_query = request.sql_query.strip()
 
-    # Se modifica la consulta base para actualizar el LIMIT y OFFSET
     sql_query = modify_pagination(base_sql_query, per_page, offset)
 
     try:
@@ -346,7 +344,6 @@ async def execute_sql_query(
             result = [dict(row._mapping) for row in result_proxy]
             total_rows = len(result)
 
-            # Guardar la consulta en el historial (se almacena la consulta base sin paginación)
             insert_query = text("""
                 INSERT INTO llm_sql_history (sql, status, "natural") 
                 VALUES (:sql_query, :status, :natural_query)
@@ -401,7 +398,6 @@ async def download_csv(request: ExecuteSQLRequest):
         with engine.connect() as conn:
             result_proxy = conn.execute(text(base_sql_query))
             result = [dict(row._mapping) for row in result_proxy]
-            # Intentamos obtener los nombres de las columnas directamente desde result_proxy
             columns = result_proxy.keys() if result_proxy.keys() else (result[0].keys() if result else [])
             
             import csv
@@ -428,7 +424,6 @@ def local_llm_suggest_chart(columns: Dict[str, str], data_sample: List[Dict[str,
     para que sugiera el tipo de gráfico ideal y qué ejes usar.
     Espera que la respuesta sea un JSON parseable.
     """
-    # Construir prompt
     prompt = (
         "Te proporcionaré la descripción de un conjunto de datos con sus columnas (nombres y tipos) "
         "y algunas filas de ejemplo. Tu tarea es sugerir el mejor tipo de gráfico para visualizar "
@@ -439,7 +434,6 @@ def local_llm_suggest_chart(columns: Dict[str, str], data_sample: List[Dict[str,
         prompt += f"- {col_name}: {col_type}\n"
     prompt += "\n### Muestra de datos:\n"
     if data_sample:
-        # Mostrar hasta 3 filas para no saturar el prompt
         sample_rows = data_sample[:3]
         for i, row in enumerate(sample_rows, start=1):
             prompt += f"Fila {i}: {row}\n"
@@ -469,21 +463,17 @@ def local_llm_suggest_chart(columns: Dict[str, str], data_sample: List[Dict[str,
         )
         llm_output = result.stdout.strip()
 
-        # Como la salida podría venir con backticks o triple backticks, los removemos si existen:
         llm_output = re.sub(r"```(json)?", "", llm_output, flags=re.IGNORECASE).strip()
         
-        # Intentamos parsear el contenido como JSON
         chart_suggestion = json.loads(llm_output)
         return chart_suggestion
 
     except subprocess.CalledProcessError as e:
-        # Error al invocar ollama
         return {
             "chart_type": "error",
             "explanation": f"Error llamando al LLM: {str(e)}"
         }
     except json.JSONDecodeError:
-        # El LLM no devolvió un JSON parseable
         return {
             "chart_type": "unknown",
             "explanation": f"No se pudo parsear la salida como JSON. Respuesta bruta: {llm_output}"
@@ -498,7 +488,6 @@ async def suggest_chart(request: ChartSuggestionRequest):
     """
     suggestion_dict = local_llm_suggest_chart(request.columns, request.data_sample)
 
-    # Extraer o asignar valores por defecto
     chart_type = suggestion_dict.get("chart_type", "unknown")
     x_axis = suggestion_dict.get("x_axis")
     y_axis = suggestion_dict.get("y_axis")

@@ -1,0 +1,610 @@
+📁 ESTRUCTURA DEL PROYECTO
+.
+├── bundle.sh
+├── docs
+│   └── postgres_manual.pdf
+├── embeddings.py
+├── images
+│   └── logo.jpg
+├── main.py
+├── NLDataQueries.txt
+├── pyproject.toml
+├── README.md
+├── requirements.txt
+├── sql
+│   ├── create.sql
+│   ├── data.sql
+│   └── queries.sql
+├── ui.html
+└── uv.lock
+
+4 directories, 14 files
+
+
+🧠 CONTENIDO RELEVANTE
+
+### ./README.md ###
+
+
+
+### ./.env ###
+DATABASE_URL=postgresql://myuser:mypassword@localhost:5432/employees
+SCHEMA=employees
+WEAVIATE_URL=http://localhost:8080/v1  
+POSTGRES_MANUAL_PDF=docs/postgres_manual.pdf  
+CHUNK_SIZE=1000  
+CHUNK_OVERLAP=200  
+SIMILARITY_THRESHOLD=0.5  
+EMBEDDING_MODEL=microsoft/codebert-base  
+EMBEDDING_CLASS=PostgresManualChunk
+
+
+
+### ./embeddings.py ###
+import os
+import weaviate
+from weaviate.connect import ConnectionParams
+from weaviate.classes.config import Configure
+from weaviate.classes.init import AdditionalConfig, Timeout
+from weaviate.classes.config import DataType
+import weaviate.classes.config as wc
+import pypdf
+from sentence_transformers import SentenceTransformer
+import numpy as np
+from dotenv import load_dotenv
+import uuid
+
+load_dotenv()
+
+weaviate_url = os.getenv("WEAVIATE_URL", "http://localhost:8080/v1")
+pdf_path = os.getenv("POSTGRES_MANUAL_PDF", "docs/postgres_manual.pdf")
+chunk_size = int(os.getenv("CHUNK_SIZE", 1000))
+chunk_overlap = int(os.getenv("CHUNK_OVERLAP", 200))
+similarity_threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.5))
+embedding_model_name = os.getenv("EMBEDDING_MODEL", "microsoft/codebert-base")
+embedding_class_name = os.getenv("EMBEDDING_CLASS", "PostgresManualChunk")
+
+
+def stream_chunks_from_pdf(pdf_path, chunk_size=1000, overlap=200):
+    """
+    Lee el PDF de forma secuencial (página a página) y genera chunks de texto con un solapamiento.
+    Esto evita cargar el documento completo en memoria.
+    """
+    with open(pdf_path, "rb") as file:
+        reader = pypdf.PdfReader(file)
+        current_text = ""
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                current_text += page_text + "\n"
+                while len(current_text) >= chunk_size:
+                    chunk = current_text[:chunk_size]
+                    yield chunk
+                    current_text = current_text[chunk_size - overlap:]
+        if current_text.strip():
+            yield current_text.strip()
+
+
+def create_weaviate_schema(client):
+    """
+    Crea una colección en Weaviate para almacenar los chunks del manual de Postgres.
+    """
+    client.collections.create(
+        name=embedding_class_name,
+        properties=[
+            {"name": "chunk_id", "data_type": DataType.UUID},
+            {"name": "text", "data_type": DataType.TEXT}
+        ],
+        vectorizer_config=[
+            Configure.NamedVectors.text2vec_transformers(
+                name="text_vector",
+                source_properties=["text"]
+            )
+        ],
+        description="Fragment of text extracted from the official PostgreSQL manual."
+
+    )
+    print(f"Collection {embedding_class_name} created in Weaviate.")
+
+
+def clear_weaviate_class(client, class_name=embedding_class_name):
+    print(f"Reseting Collection {embedding_class_name}.")
+    client.collections.delete(embedding_class_name)
+
+
+def cosine_similarity(vec1, vec2):
+    """
+    Calcula la similitud coseno entre dos vectores.
+    """
+    vec1 = np.array(vec1)
+    vec2 = np.array(vec2)
+    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+
+
+def process_and_upload_chunk(chunk, idx, client, model, ref_embedding, threshold=0.5):
+    """
+    Evalúa la relevancia del chunk comparando su embedding con un embedding de referencia.
+    Si la similitud es mayor o igual al umbral, sube el chunk a Weaviate.
+    """
+    chunk_embedding = model.encode(chunk).tolist()
+    sim = cosine_similarity(chunk_embedding, ref_embedding)
+    
+    if sim >= threshold:
+        data_object = {
+            "chunk_id": str(uuid.uuid4()),
+            "text": chunk
+        }
+
+        knowledge_base.data.insert(data_object)
+
+        print(f"Chunk {idx} uploaded (similarity: {sim:.2f}).")
+        print(f"Inserted chunk content: {chunk}")
+    else:
+        print(f"Chunk {idx} discarded due to low relevance (similarity: {sim:.2f}).")
+
+
+
+### ./ui.html ###
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NLDataQueries</title>
+
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <!-- Tabulator CSS -->
+  <link href="https://unpkg.com/tabulator-tables/dist/css/tabulator.min.css" rel="stylesheet">
+
+  <!-- JSTree CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.12/themes/default/style.min.css" />
+
+  <!-- Chart.js para renderizar gráficos -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    /* Estilos existentes */
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background-color: #f8f9fa;
+    }
+    .content-wrapper {
+      display: flex;
+      flex-grow: 1;
+      overflow: hidden;
+    }
+    .sidebar {
+      width: 300px;
+      background: white;
+      padding: 10px;
+      box-shadow: 2px 0px 5px rgba(0, 0, 0, 0.1);
+      overflow-y: auto;
+    }
+    .main-content {
+      flex-grow: 1;
+      padding: 20px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+      margin: 20px;
+      overflow-y: auto;
+    }
+    textarea {
+      width: 100%;
+      height: 80px;
+      margin-bottom: 10px;
+    }
+    button {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      margin-bottom: 5px;
+    }
+    button:hover {
+      background-color: #0056b3;
+    }
+    #sql-query {
+      background: #f0f0f0;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      white-space: pre-wrap;
+      margin-top: 10px;
+    }
+    #table-container {
+      margin-top: 20px;
+    }
+    .pagination-controls {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 10px;
+    }
+    .download-controls {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 10px;
+    }
+    .overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      justify-content: center;
+      align-items: center;
+
+
+
+### ./bundle.sh ###
+#!/bin/bash
+
+# bundle_project.sh
+# Combina la estructura y contenido de un proyecto en un único archivo de texto
+
+# === Configuración por defecto ===
+MAX_LINES=100
+EXTENSIONS="py|md|json|yml|env|toml|txt|html|js|ts|css|sh"
+EXCLUDE_DIRS=".git|node_modules|venv|__pycache__"
+
+# === Uso ===
+if [[ $# -lt 1 ]]; then
+  echo "Uso: $0 <salida.txt> [directorio_a_excluir...]"
+  exit 1
+fi
+
+OUTPUT_FILE="$1"
+shift
+
+# Agregar exclusiones adicionales desde argumentos
+for dir in "$@"; do
+  EXCLUDE_DIRS+="|$dir"
+done
+
+# === Paso 1: Estructura del proyecto ===
+echo "📁 ESTRUCTURA DEL PROYECTO" > "$OUTPUT_FILE"
+tree -I "$EXCLUDE_DIRS" >> "$OUTPUT_FILE"
+
+echo -e "\n\n🧠 CONTENIDO RELEVANTE\n" >> "$OUTPUT_FILE"
+
+# === Paso 2: Recorrer archivos y agregar su contenido ===
+find . -type f | grep -Ev "$EXCLUDE_DIRS" | while read file; do
+  # Extraer extensión del archivo
+  ext="${file##*.}"
+
+  # Verificar si la extensión está permitida
+  if [[ "$file" =~ \.($EXTENSIONS)$ ]]; then
+    echo "### $file ###" >> "$OUTPUT_FILE"
+    head -n $MAX_LINES "$file" >> "$OUTPUT_FILE"
+    echo -e "\n\n" >> "$OUTPUT_FILE"
+  elif [[ "$(basename "$file")" == "requirements.txt" ]]; then
+    echo "### $file ###" >> "$OUTPUT_FILE"
+    echo "(Contenido omitido: dependencias externas)" >> "$OUTPUT_FILE"
+    head -n 5 "$file" >> "$OUTPUT_FILE"
+    echo -e "\n\n" >> "$OUTPUT_FILE"
+  fi
+done
+
+echo "✅ Bundle generado exitosamente en $OUTPUT_FILE"
+
+
+
+
+### ./NLDataQueries.txt ###
+📁 ESTRUCTURA DEL PROYECTO
+.
+├── bundle.sh
+├── docs
+│   └── postgres_manual.pdf
+├── embeddings.py
+├── images
+│   └── logo.jpg
+├── main.py
+├── NLDataQueries.txt
+├── pyproject.toml
+├── README.md
+├── requirements.txt
+├── sql
+│   ├── create.sql
+│   ├── data.sql
+│   └── queries.sql
+├── ui.html
+└── uv.lock
+
+4 directories, 14 files
+
+
+🧠 CONTENIDO RELEVANTE
+
+### ./README.md ###
+
+
+
+### ./.env ###
+DATABASE_URL=postgresql://myuser:mypassword@localhost:5432/employees
+SCHEMA=employees
+WEAVIATE_URL=http://localhost:8080/v1  
+POSTGRES_MANUAL_PDF=docs/postgres_manual.pdf  
+CHUNK_SIZE=1000  
+CHUNK_OVERLAP=200  
+SIMILARITY_THRESHOLD=0.5  
+EMBEDDING_MODEL=microsoft/codebert-base  
+EMBEDDING_CLASS=PostgresManualChunk
+
+
+
+### ./embeddings.py ###
+import os
+import weaviate
+from weaviate.connect import ConnectionParams
+from weaviate.classes.config import Configure
+from weaviate.classes.init import AdditionalConfig, Timeout
+from weaviate.classes.config import DataType
+import weaviate.classes.config as wc
+import pypdf
+from sentence_transformers import SentenceTransformer
+import numpy as np
+from dotenv import load_dotenv
+import uuid
+
+load_dotenv()
+
+weaviate_url = os.getenv("WEAVIATE_URL", "http://localhost:8080/v1")
+pdf_path = os.getenv("POSTGRES_MANUAL_PDF", "docs/postgres_manual.pdf")
+chunk_size = int(os.getenv("CHUNK_SIZE", 1000))
+chunk_overlap = int(os.getenv("CHUNK_OVERLAP", 200))
+similarity_threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.5))
+embedding_model_name = os.getenv("EMBEDDING_MODEL", "microsoft/codebert-base")
+embedding_class_name = os.getenv("EMBEDDING_CLASS", "PostgresManualChunk")
+
+
+def stream_chunks_from_pdf(pdf_path, chunk_size=1000, overlap=200):
+    """
+    Lee el PDF de forma secuencial (página a página) y genera chunks de texto con un solapamiento.
+    Esto evita cargar el documento completo en memoria.
+    """
+    with open(pdf_path, "rb") as file:
+        reader = pypdf.PdfReader(file)
+        current_text = ""
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                current_text += page_text + "\n"
+                while len(current_text) >= chunk_size:
+                    chunk = current_text[:chunk_size]
+                    yield chunk
+                    current_text = current_text[chunk_size - overlap:]
+        if current_text.strip():
+            yield current_text.strip()
+
+
+def create_weaviate_schema(client):
+    """
+    Crea una colección en Weaviate para almacenar los chunks del manual de Postgres.
+    """
+    client.collections.create(
+        name=embedding_class_name,
+        properties=[
+            {"name": "chunk_id", "data_type": DataType.UUID},
+            {"name": "text", "data_type": DataType.TEXT}
+        ],
+        vectorizer_config=[
+            Configure.NamedVectors.text2vec_transformers(
+                name="text_vector",
+
+
+
+### ./requirements.txt ###
+annotated-types==0.7.0
+anyio==4.9.0
+authlib==1.3.1
+certifi==2025.1.31
+cffi==1.17.1
+charset-normalizer==3.4.1
+click==8.1.8
+cryptography==44.0.2
+dotenv==0.9.9
+fastapi==0.115.11
+filelock==3.18.0
+fsspec==2025.3.0
+greenlet==3.1.1
+grpcio==1.71.0
+grpcio-health-checking==1.71.0
+grpcio-tools==1.71.0
+h11==0.14.0
+httpcore==1.0.7
+httpx==0.28.1
+huggingface-hub==0.29.3
+idna==3.10
+jinja2==3.1.6
+joblib==1.4.2
+markupsafe==3.0.2
+mpmath==1.3.0
+networkx==3.4.2
+numpy==2.2.4
+nvidia-cublas-cu12==12.4.5.8
+nvidia-cuda-cupti-cu12==12.4.127
+nvidia-cuda-nvrtc-cu12==12.4.127
+nvidia-cuda-runtime-cu12==12.4.127
+nvidia-cudnn-cu12==9.1.0.70
+nvidia-cufft-cu12==11.2.1.3
+nvidia-curand-cu12==10.3.5.147
+nvidia-cusolver-cu12==11.6.1.9
+nvidia-cusparse-cu12==12.3.1.170
+nvidia-cusparselt-cu12==0.6.2
+nvidia-nccl-cu12==2.21.5
+nvidia-nvjitlink-cu12==12.4.127
+nvidia-nvtx-cu12==12.4.127
+packaging==24.2
+pillow==11.1.0
+protobuf==5.29.4
+psycopg2-binary==2.9.10
+pycparser==2.22
+pydantic==2.10.6
+pydantic-core==2.27.2
+pypdf==5.4.0
+python-dotenv==1.0.1
+pyyaml==6.0.2
+regex==2024.11.6
+requests==2.32.3
+safetensors==0.5.3
+scikit-learn==1.6.1
+scipy==1.15.2
+sentence-transformers==3.4.1
+setuptools==77.0.1
+sniffio==1.3.1
+sqlalchemy==2.0.39
+starlette==0.46.1
+sympy==1.13.1
+threadpoolctl==3.6.0
+tokenizers==0.21.1
+torch==2.6.0
+tqdm==4.67.1
+transformers==4.49.0
+triton==3.2.0
+typing-extensions==4.12.2
+urllib3==2.3.0
+uvicorn==0.34.0
+validators==0.34.0
+weaviate-client==4.11.2
+
+
+
+### ./pyproject.toml ###
+[project]
+name = "nldataqueries"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dotenv>=0.9.9",
+    "fastapi>=0.115.11",
+    "psycopg2-binary>=2.9.10",
+    "pypdf>=5.4.0",
+    "requests>=2.32.3",
+    "sentence-transformers>=3.4.1",
+    "sqlalchemy>=2.0.39",
+    "uuid>=1.30",
+    "uvicorn>=0.34.0",
+    "weaviate-client>=4.11.2",
+]
+
+
+
+### ./main.py ###
+import uvicorn
+import os
+import subprocess
+import asyncio
+import psycopg2
+import requests
+import re
+import json
+import subprocess
+import weaviate
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import create_engine, MetaData, Table, inspect, text
+from sqlalchemy.exc import SQLAlchemyError
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from typing import List
+from pydantic import BaseModel
+from typing import Dict, List, Any, Optional
+from weaviate.connect import ConnectionParams
+from dotenv import load_dotenv
+
+
+
+# Cargar variables de entorno desde el fichero .env
+load_dotenv()
+
+WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://localhost:8080/v1")
+DATABASE_URL = os.getenv("DATABASE_URL")
+SCHEMA = os.getenv("SCHEMA")
+
+# Crear la conexión a la base de datos y la instancia de MetaData
+engine = create_engine(f"{DATABASE_URL}?options=-csearch_path={SCHEMA}")
+metadata = MetaData()
+
+better_prompt = (
+    "Es extremadamente importante que la respuesta a esta consulta debe ser única y exclusivamente una "
+    "consulta sql standard que pueda ser ejecutada en una base de datos postgresql sin incorporar headers ni footers ni "
+    "conclusiones, solo texto sql que pudiera ser ejecutado en una consola de base de datos. El comienzo de la respuesta "
+    "debe empezar por la palabra SELECT y terminar con un punto y coma. Si la respuesta no cumple con estos requisitos, "
+    "el modelo no podrá evaluarla correctamente. Por favor, asegúrate de que la respuesta sea una consulta sql válida."
+)
+
+app = FastAPI(title="NLDataQueries: Consulta en Lenguaje Natural a SQL")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Permite cualquier origen, restringe esto en producción
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite todos los métodos HTTP
+    allow_headers=["*"],  # Permite todos los headers
+)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+class HistoryResponse(BaseModel):
+    total_rows: int
+    page: int
+    per_page: int
+    results: List[dict]
+
+
+class ExecuteSQLRequest(BaseModel):
+    natural_language_query: str
+    sql_query: str
+
+
+class ChartSuggestionRequest(BaseModel):
+    # columns: dict => { "colName": "colType", ... }
+    columns: Dict[str, str]
+    # data_sample: lista de filas, cada fila es un dict con {columna: valor}
+    data_sample: List[Dict[str, Any]]
+
+class ChartSuggestionResponse(BaseModel):
+    chart_type: str
+    x_axis: Optional[str] = None
+    y_axis: Optional[str] = None
+    group_by: Optional[str] = None
+    explanation: Optional[str] = None
+
+# Variable global para almacenar el esquema actualizado
+current_schema = {}
+
+def get_weaviate_client():
+    client = weaviate.WeaviateClient(
+        connection_params=ConnectionParams.from_params(
+            http_host="localhost",
+            http_port="8080",
+            http_secure=False,
+            grpc_host="localhost",
+            grpc_port="50051",
+            grpc_secure=False,
+        )
+    )
+    client.connect()
+    return client
+
+import weaviate
+
+def get_weaviate_client():
+
+    client = weaviate.WeaviateClient(
+
+
+

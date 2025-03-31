@@ -11,7 +11,6 @@ import numpy as np
 from dotenv import load_dotenv
 import uuid
 
-# Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
 weaviate_url = os.getenv("WEAVIATE_URL", "http://localhost:8080/v1")
@@ -35,13 +34,10 @@ def stream_chunks_from_pdf(pdf_path, chunk_size=1000, overlap=200):
             page_text = page.extract_text()
             if page_text:
                 current_text += page_text + "\n"
-                # Generar chunks mientras el buffer sea mayor al tamaño deseado
                 while len(current_text) >= chunk_size:
                     chunk = current_text[:chunk_size]
                     yield chunk
-                    # Mantener el solapamiento
                     current_text = current_text[chunk_size - overlap:]
-        # Generar el último chunk si queda texto
         if current_text.strip():
             yield current_text.strip()
 
@@ -71,8 +67,6 @@ def create_weaviate_schema(client):
 def clear_weaviate_class(client, class_name=embedding_class_name):
     print(f"Reseting Collection {embedding_class_name}.")
     client.collections.delete(embedding_class_name)
-    # Note: you can also delete all collections in the Weaviate instance with:
-    # client.collections.delete_all()
 
 
 def cosine_similarity(vec1, vec2):
@@ -89,12 +83,10 @@ def process_and_upload_chunk(chunk, idx, client, model, ref_embedding, threshold
     Evalúa la relevancia del chunk comparando su embedding con un embedding de referencia.
     Si la similitud es mayor o igual al umbral, sube el chunk a Weaviate.
     """
-    # Generar el embedding del chunk
     chunk_embedding = model.encode(chunk).tolist()
     sim = cosine_similarity(chunk_embedding, ref_embedding)
     
     if sim >= threshold:
-        # Crear el objeto de datos y subir a Weaviate
         data_object = {
             "chunk_id": str(uuid.uuid4()),
             "text": chunk
@@ -103,13 +95,11 @@ def process_and_upload_chunk(chunk, idx, client, model, ref_embedding, threshold
         knowledge_base.data.insert(data_object)
 
         print(f"Chunk {idx} uploaded (similarity: {sim:.2f}).")
-        # ----> Mejora: Mostrar en el log el contenido del chunk insertado
         print(f"Inserted chunk content: {chunk}")
     else:
         print(f"Chunk {idx} discarded due to low relevance (similarity: {sim:.2f}).")
 
 
-# ===== NUEVAS FUNCIONES PARA MEJORAR LA RELEVANCIA DE LOS CHUNKS =====
 
 def refine_chunk(chunk, min_chunk_size=500, max_chunk_size=1500):
     """
@@ -118,7 +108,6 @@ def refine_chunk(chunk, min_chunk_size=500, max_chunk_size=1500):
     hasta alcanzar un tamaño adecuado.
     """
     import re
-    # Dividir el chunk en oraciones utilizando una expresión regular
     sentences = re.split(r'(?<=[.!?])\s+', chunk)
     refined_chunks = []
     current_chunk = ""
@@ -129,7 +118,6 @@ def refine_chunk(chunk, min_chunk_size=500, max_chunk_size=1500):
             if len(current_chunk) >= min_chunk_size:
                 refined_chunks.append(current_chunk.strip())
             else:
-                # Si el chunk es muy corto, se concatena con el anterior (si existe)
                 if refined_chunks:
                     refined_chunks[-1] += " " + current_chunk.strip()
                 else:
@@ -154,11 +142,9 @@ def improved_chunks_from_pdf(pdf_path, chunk_size=1000, overlap=200):
             yield refined
 
 
-# =====================================================================
 
 def main():
     try: 
-        # Inicializar el cliente de Weaviate con la nueva API v4
         client = weaviate.WeaviateClient(
             connection_params=ConnectionParams.from_params(
                 http_host="localhost",
@@ -168,12 +154,8 @@ def main():
                 grpc_port="50051",
                 grpc_secure=False,
             ),
-            # auth_client_secret=weaviate.auth.AuthApiKey("secr3tk3y"),
-            # additional_headers={
-            #     "X-OpenAI-Api-Key": os.getenv("OPENAI_APIKEY")
-            # },
             additional_config=AdditionalConfig(
-                timeout=Timeout(init=2, query=45, insert=120),  # Values in seconds
+                timeout=Timeout(init=2, query=45, insert=120),
             ),
         )
 
@@ -182,22 +164,17 @@ def main():
         global knowledge_base
         knowledge_base = client.collections.get(embedding_class_name)
         
-        # Borrar el contenido actual de la clase para asegurar un estado limpio
         clear_weaviate_class(client, class_name=embedding_class_name)
 
-        # Crear el esquema en Weaviate si aún no existe
         create_weaviate_schema(client)
         
-        # Verificar existencia del archivo PDF
         if not os.path.exists(pdf_path):
             print(f"File {pdf_path} not found.")
             return
         
-        # Cargar el modelo de embeddings
         print("Loading embedding model...")
         model = SentenceTransformer(embedding_model_name)
         
-        # Definir un reference_text mejorado, con lenguaje técnico y dirigido a SQL experts y DBAs.
         reference_text = (
             "This document serves as an advanced technical guide for PostgreSQL, emphasizing robust SQL query optimization techniques, "
             "in-depth execution plan analysis, and comprehensive indexing strategies—including B-tree, hash, GiST, and partial indexes. "
@@ -208,10 +185,7 @@ def main():
         ref_embedding = model.encode(reference_text).tolist()
 
         
-        # Procesar el PDF de forma secuencial y evaluar cada chunk
         print("Processing and uploading relevant chunks from the PDF...")
-        # --- ORIGINAL: chunk_generator = stream_chunks_from_pdf(pdf_path, chunk_size=chunk_size, overlap=chunk_overlap)
-        # ----> Mejora: Reemplazar el generador de chunks por la versión mejorada que mantiene oraciones completas
         chunk_generator = improved_chunks_from_pdf(pdf_path, chunk_size=chunk_size, overlap=chunk_overlap)
         
         for idx, chunk in enumerate(chunk_generator):
@@ -219,7 +193,6 @@ def main():
         
         print("Process completed.")
     finally:
-        # Asegurar que el cliente se cierra correctamente
         client.close()
 
 
